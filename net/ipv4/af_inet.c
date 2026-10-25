@@ -443,6 +443,9 @@ int inet_release(struct socket *sock)
 	if (sk) {
 		long timeout;
 
+		/* Notify before detaching or closing the live socket. */
+		BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk);
+
 #ifdef CONFIG_NETFILTER_XT_MATCH_QTAGUID
 		qtaguid_untag(sock, true);
 #endif
