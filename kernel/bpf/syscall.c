@@ -12,10 +12,12 @@
 #include <linux/bpf.h>
 #include <linux/bpf_trace.h>
 #include <linux/btf.h>
+#include <uapi/linux/btf.h>
 #include <linux/syscalls.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mmzone.h>
+#include <linux/mm.h>
 #include <linux/anon_inodes.h>
 #include <linux/file.h>
 #include <linux/license.h>
@@ -26,6 +28,7 @@
 #include <linux/cred.h>
 #include <linux/timekeeping.h>
 #include <linux/ctype.h>
+#include <linux/poll.h>
 
 #define BPF_OBJ_FLAG_MASK   (BPF_F_RDONLY | BPF_F_WRONLY)
 
@@ -164,6 +167,7 @@ static void bpf_map_free_deferred(struct work_struct *work)
 
 	bpf_map_uncharge_memlock(map);
 	security_bpf_map_free(map);
+	if (map->btf) btf_put(map->btf);
 	/* implementation dependent freeing */
 	map->ops->map_free(map);
 }
@@ -261,7 +265,54 @@ static ssize_t bpf_dummy_write(struct file *filp, const char __user *buf,
 	return -EINVAL;
 }
 
+/* SPDX-License-Identifier: GPL-2.0-only
+ * Shared array mapping adapted from Linux v5.10. R24U has no MAP_FREEZE,
+ * BTF spin-lock or program-readonly map semantics; those remain rejected.
+ */
+void *bpf_map_area_mmapable_alloc(size_t size, int numa_node)
+{
+	/* Explicit vmalloc, zero padding and VM_USERMAP are mandatory. Avoid
+	 * invoking the OOM killer on behalf of a failed map allocation.
+	 */
+	return __vmalloc_node_range(size, PAGE_SIZE, VMALLOC_START, VMALLOC_END,
+		GFP_USER | __GFP_NOWARN | __GFP_NORETRY | __GFP_ZERO, PAGE_KERNEL,
+		VM_USERMAP, numa_node, __builtin_return_address(0));
+}
+
+static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+	struct bpf_map *map = filp->private_data;
+
+	if (!map->ops->map_mmap)
+		return -EOPNOTSUPP;
+	if (!(vma->vm_flags & VM_SHARED))
+		return -EINVAL;
+	if (vma->vm_flags & VM_EXEC)
+		return -EACCES;
+	if (!(filp->f_mode & FMODE_READ) ||
+	    ((vma->vm_flags & VM_WRITE) && !(filp->f_mode & FMODE_WRITE)))
+		return -EACCES;
+
+	vma->vm_flags &= ~VM_MAYEXEC;
+	if (!(vma->vm_flags & VM_WRITE))
+		vma->vm_flags &= ~VM_MAYWRITE;
+	/* Generic mmap/fork/split paths hold vm_file, which owns the map ref.
+	 * Closing the fd cannot release the map until the last VMA is gone.
+	 * No writecnt/freeze callbacks are needed without MAP_FREEZE support.
+	 */
+	return map->ops->map_mmap(map, vma);
+}
+
+
+static unsigned int bpf_map_poll(struct file *filp, struct poll_table_struct *pts)
+{
+	struct bpf_map *map = filp->private_data;
+	return map->ops->map_poll ? map->ops->map_poll(map, filp, pts) : POLLERR;
+}
+
 const struct file_operations bpf_map_fops = {
+	.poll = bpf_map_poll,
+	.mmap		= bpf_map_mmap,
 #ifdef CONFIG_PROC_FS
 	.show_fdinfo	= bpf_map_show_fdinfo,
 #endif
@@ -324,7 +375,33 @@ static int bpf_obj_name_cpy(char *dst, const char *src)
 	return 0;
 }
 
-#define BPF_MAP_CREATE_LAST_FIELD map_name
+#define BPF_MAP_CREATE_LAST_FIELD btf_value_type_id
+
+/* Resolve and validate actual BTF types. Keep the descriptor alive for the map. */
+static int bpf_map_set_btf(struct bpf_map *map, const union bpf_attr *attr)
+{
+ struct btf *btf;
+ const struct btf_type *key_type, *value_type;
+ u32 key_id = attr->btf_key_type_id, value_id = attr->btf_value_type_id;
+ u32 key_size, value_size;
+ if (!attr->btf_fd && !key_id && !value_id)
+  return map->map_type == BPF_MAP_TYPE_SK_STORAGE ? -EINVAL : 0;
+ if (!key_id || !value_id || !map->key_size || !map->value_size) return -EINVAL;
+ btf = btf_get_by_fd(attr->btf_fd);
+ if (IS_ERR(btf)) return PTR_ERR(btf);
+ key_type = btf_type_id_size(btf, &key_id, &key_size);
+ value_type = btf_type_id_size(btf, &value_id, &value_size);
+ if (!key_type || !value_type || key_size != map->key_size || value_size != map->value_size ||
+     (map->map_type == BPF_MAP_TYPE_SK_STORAGE && BTF_INFO_KIND(key_type->info) != BTF_KIND_INT)) {
+  btf_put(btf);
+  return -EINVAL;
+ }
+ map->btf = btf;
+ map->btf_key_type_id = attr->btf_key_type_id;
+ map->btf_value_type_id = attr->btf_value_type_id;
+ return 0;
+}
+
 /* called via syscall */
 static int map_create(union bpf_attr *attr)
 {
@@ -337,6 +414,7 @@ static int map_create(union bpf_attr *attr)
 	if (err)
 		return -EINVAL;
 
+	if (attr->map_ifindex) return -EOPNOTSUPP;
 	f_flags = bpf_get_file_flag(attr->map_flags);
 	if (f_flags < 0)
 		return f_flags;
@@ -350,6 +428,8 @@ static int map_create(union bpf_attr *attr)
 	if (IS_ERR(map))
 		return PTR_ERR(map);
 
+	err = bpf_map_set_btf(map, attr);
+	if (err) goto free_map_nouncharge;
 	err = bpf_obj_name_cpy(map->name, attr->map_name);
 	if (err)
 		goto free_map_nouncharge;
@@ -389,6 +469,7 @@ free_map:
 free_map_sec:
 	security_bpf_map_free(map);
 free_map_nouncharge:
+	if (map->btf) btf_put(map->btf);
 	map->ops->map_free(map);
 	return err;
 }
@@ -522,10 +603,14 @@ static int map_lookup_elem(union bpf_attr *attr)
 	} else {
 		rcu_read_lock();
 		ptr = map->ops->map_lookup_elem(map, key);
-		if (ptr)
-			memcpy(value, ptr, value_size);
+		if (IS_ERR(ptr))
+			err = PTR_ERR(ptr);
+		else {
+			err = ptr ? 0 : -ENOENT;
+			if (ptr)
+				memcpy(value, ptr, value_size);
+		}
 		rcu_read_unlock();
-		err = ptr ? 0 : -ENOENT;
 	}
 
 	if (err)
@@ -1050,6 +1135,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 	case BPF_PROG_TYPE_CGROUP_SOCK:
 		switch (expected_attach_type) {
 		case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 		case BPF_CGROUP_INET4_POST_BIND:
 		case BPF_CGROUP_INET6_POST_BIND:
 			return 0;
@@ -1070,6 +1156,9 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
 		default:
 			return -EINVAL;
 		}
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+        return expected_attach_type == BPF_CGROUP_GETSOCKOPT ||
+               expected_attach_type == BPF_CGROUP_SETSOCKOPT ? 0 : -EINVAL;
 	default:
 		return 0;
 	}
@@ -1081,6 +1170,7 @@ static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
 	switch (prog->type) {
 	case BPF_PROG_TYPE_CGROUP_SOCK:
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
 		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
 	default:
 		return 0;
@@ -1297,6 +1387,7 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
 		break;
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 	case BPF_CGROUP_INET4_POST_BIND:
 	case BPF_CGROUP_INET6_POST_BIND:
 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
@@ -1314,6 +1405,10 @@ static int bpf_prog_attach(const union bpf_attr *attr)
 	case BPF_CGROUP_SOCK_OPS:
 		ptype = BPF_PROG_TYPE_SOCK_OPS;
 		break;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
+        break;
 	case BPF_CGROUP_DEVICE:
 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
 		break;
@@ -1370,6 +1465,7 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
 		break;
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 	case BPF_CGROUP_INET4_POST_BIND:
 	case BPF_CGROUP_INET6_POST_BIND:
 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
@@ -1387,6 +1483,10 @@ static int bpf_prog_detach(const union bpf_attr *attr)
 	case BPF_CGROUP_SOCK_OPS:
 		ptype = BPF_PROG_TYPE_SOCK_OPS;
 		break;
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
+        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
+        break;
 	case BPF_CGROUP_DEVICE:
 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
 		break;
@@ -1432,6 +1532,7 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	case BPF_CGROUP_INET_INGRESS:
 	case BPF_CGROUP_INET_EGRESS:
 	case BPF_CGROUP_INET_SOCK_CREATE:
+	case BPF_CGROUP_INET_SOCK_RELEASE:
 	case BPF_CGROUP_INET4_BIND:
 	case BPF_CGROUP_INET6_BIND:
 	case BPF_CGROUP_INET4_POST_BIND:
@@ -1443,6 +1544,8 @@ static int bpf_prog_query(const union bpf_attr *attr,
 	case BPF_CGROUP_UDP4_RECVMSG:
 	case BPF_CGROUP_UDP6_RECVMSG:
 	case BPF_CGROUP_SOCK_OPS:
+	case BPF_CGROUP_GETSOCKOPT:
+	case BPF_CGROUP_SETSOCKOPT:
 	case BPF_CGROUP_DEVICE:
 		break;
 	default:
@@ -1749,6 +1852,113 @@ static int bpf_btf_load(const union bpf_attr *attr)
 	return btf_new_fd(attr);
 }
 
+/* SPDX-License-Identifier: GPL-2.0
+ * Array batch lookup adapted from Linux commit cb4d03ab499d.
+ * Keys and values have separate allocations: this includes the fix for the
+ * mixed-stride buffer corruption described in Linux commit 953824e508b2.
+ */
+int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
+			  union bpf_attr __user *uattr)
+{
+	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
+	void __user *uvalues = u64_to_user_ptr(attr->batch.values);
+	void __user *in = u64_to_user_ptr(attr->batch.in_batch);
+	void *value = NULL, *ptr;
+	u32 key = 0, last = 0, count = 0, limit = attr->batch.count;
+	size_t stride = round_up((size_t)map->value_size, 8), value_size;
+	bool percpu = map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
+	int ret = 0;
+
+	if (attr->batch.flags || attr->batch.elem_flags)
+		return -EINVAL;
+	if (!limit)
+		return 0;
+	if (put_user(0, &uattr->batch.count))
+		return -EFAULT;
+	if (percpu && stride > SIZE_MAX / num_possible_cpus())
+		return -E2BIG;
+	value_size = percpu ? stride * num_possible_cpus() : map->value_size;
+	if (!value_size || limit > SIZE_MAX / value_size ||
+	    limit > SIZE_MAX / sizeof(key))
+		return -E2BIG;
+	if (in) {
+		if (copy_from_user(&key, in, sizeof(key)))
+			return -EFAULT;
+		/* Array get_next_key restarts for a non-existent key. */
+		key = key >= map->max_entries ? 0 : key + 1;
+	}
+	value = kmalloc(value_size, GFP_USER | __GFP_NOWARN);
+	if (!value)
+		return -ENOMEM;
+	while (count < limit) {
+		if (key >= map->max_entries) {
+			ret = -ENOENT;
+			break;
+		}
+		if (percpu) {
+			ret = bpf_percpu_array_copy(map, &key, value);
+		} else {
+			rcu_read_lock();
+			ptr = map->ops->map_lookup_elem(map, &key);
+			if (ptr)
+				memcpy(value, ptr, value_size);
+			rcu_read_unlock();
+			ret = ptr ? 0 : -ENOENT;
+		}
+		if (ret)
+			break;
+		if (copy_to_user(ukeys + (size_t)count * sizeof(key), &key, sizeof(key)) ||
+		    copy_to_user(uvalues + (size_t)count * value_size, value, value_size)) {
+			ret = -EFAULT;
+			break;
+		}
+		last = key++;
+		count++;
+	}
+	if (ret != -EFAULT &&
+	    (put_user(count, &uattr->batch.count) ||
+	     (count && copy_to_user(u64_to_user_ptr(attr->batch.out_batch), &last, sizeof(last)))))
+		ret = -EFAULT;
+	kfree(value);
+	return ret;
+}
+
+/* The outer bpf syscall retains security_bpf and unprivileged-BPF checks. */
+#define BPF_MAP_BATCH_LAST_FIELD batch.flags
+
+static int bpf_map_do_batch(const union bpf_attr *attr,
+			  union bpf_attr __user *uattr, int command)
+{
+	struct fd file;
+	struct bpf_map *map;
+	int ret;
+
+	if (CHECK_ATTR(BPF_MAP_BATCH))
+		return -EINVAL;
+	if (attr->batch.flags || attr->batch.elem_flags)
+		return -EINVAL;
+	file = fdget(attr->batch.map_fd);
+	map = __bpf_map_get(file);
+	/* In R24U __bpf_map_get releases a non-map descriptor on error. */
+	if (IS_ERR(map))
+		return PTR_ERR(map);
+	if (!(file.file->f_mode & FMODE_CAN_READ) ||
+	    (command == BPF_MAP_LOOKUP_AND_DELETE_BATCH &&
+	     !(file.file->f_mode & FMODE_CAN_WRITE))) {
+		ret = -EPERM;
+		goto out;
+	}
+	if (command == BPF_MAP_LOOKUP_BATCH)
+		ret = map->ops->map_lookup_batch ?
+			map->ops->map_lookup_batch(map, attr, uattr) : -ENOTSUPP;
+	else
+		ret = map->ops->map_lookup_and_delete_batch ?
+			map->ops->map_lookup_and_delete_batch(map, attr, uattr) : -ENOTSUPP;
+out:
+	fdput(file);
+	return ret;
+}
+
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
 {
 	union bpf_attr attr;
@@ -1837,6 +2047,10 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
 		break;
 	case BPF_OBJ_GET_INFO_BY_FD:
 		err = bpf_obj_get_info_by_fd(&attr, uattr);
+		break;
+	case BPF_MAP_LOOKUP_BATCH:
+	case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
+		err = bpf_map_do_batch(&attr, uattr, cmd);
 		break;
 	case BPF_BTF_LOAD:
 		err = bpf_btf_load(&attr);

@@ -89,6 +89,8 @@ enum bpf_cmd {
 	BPF_OBJ_GET_INFO_BY_FD,
 	BPF_PROG_QUERY,
 	BPF_BTF_LOAD = 18,
+	BPF_MAP_LOOKUP_BATCH = 24,
+	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
 };
 
 enum bpf_map_type {
@@ -108,6 +110,8 @@ enum bpf_map_type {
 	BPF_MAP_TYPE_HASH_OF_MAPS,
 	BPF_MAP_TYPE_DEVMAP,
 	BPF_MAP_TYPE_SOCKMAP,
+	BPF_MAP_TYPE_SK_STORAGE = 24,
+	BPF_MAP_TYPE_RINGBUF = 27,
 };
 
 enum bpf_prog_type {
@@ -128,6 +132,7 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_SK_SKB,
 	BPF_PROG_TYPE_CGROUP_DEVICE,
 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
+	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
 };
 
 enum bpf_attach_type {
@@ -148,6 +153,9 @@ enum bpf_attach_type {
 	BPF_CGROUP_UDP6_SENDMSG,
 	BPF_CGROUP_UDP4_RECVMSG = 19,
 	BPF_CGROUP_UDP6_RECVMSG,
+	BPF_CGROUP_GETSOCKOPT = 21,
+	BPF_CGROUP_SETSOCKOPT,
+	BPF_CGROUP_INET_SOCK_RELEASE = 34, /* Linux UAPI, not private slot 23 */
 	__MAX_BPF_ATTACH_TYPE
 };
 
@@ -230,7 +238,23 @@ enum bpf_attach_type {
 #define BPF_F_RDONLY		(1U << 3)
 #define BPF_F_WRONLY		(1U << 4)
 
+/* Array values may be shared through mmap. */
+#define BPF_F_MMAPABLE		(1U << 10)
+
 union bpf_attr {
+
+    struct { /* Standard batch lookup ABI; pointers aligned on ARM32 too. */
+        __aligned_u64 in_batch;
+        __aligned_u64 out_batch;
+        __aligned_u64 keys;
+        __aligned_u64 values;
+        __u32 count;
+        __u32 map_fd;
+        __u64 elem_flags;
+        __u64 flags;
+    } batch;
+
+
 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
 		__u32	map_type;	/* one of enum bpf_map_type */
 		__u32	key_size;	/* size of key in bytes */
@@ -244,6 +268,10 @@ union bpf_attr {
 					 * BPF_F_NUMA_NODE is set).
 					 */
 		char	map_name[BPF_OBJ_NAME_LEN];
+		__u32 map_ifindex;
+		__u32 btf_fd;
+		__u32 btf_key_type_id;
+		__u32 btf_value_type_id;
 	};
 
 	struct { /* anonymous struct used by BPF_MAP_*_ELEM commands */
@@ -819,8 +847,16 @@ union bpf_attr {
  * function eBPF program intends to call
  */
 #define __BPF_ENUM_FN(x) BPF_FUNC_ ## x
+/* Flags for the socket-storage get helper. */
+#define BPF_SK_STORAGE_GET_F_CREATE (1ULL << 0)
+
 enum bpf_func_id {
 	__BPF_FUNC_MAPPER(__BPF_ENUM_FN)
+	BPF_FUNC_ringbuf_output = 130,
+	BPF_FUNC_ringbuf_reserve = 131,
+	BPF_FUNC_ringbuf_submit = 132,
+	BPF_FUNC_ringbuf_discard = 133,
+	BPF_FUNC_ringbuf_query = 134,
 	__BPF_FUNC_MAX_ID,
 };
 #undef __BPF_ENUM_FN
@@ -895,6 +931,13 @@ struct __sk_buff {
 	__u32 data;
 	__u32 data_end;
 	__u32 napi_id;
+ /* Preserve standard ABI offsets; only gso_segs and sk are exposed below. */
+ __u32 family, remote_ip4, local_ip4, remote_ip6[4], local_ip6[4];
+ __u32 remote_port, local_port, data_meta;
+ union { void *flow_keys; __u64 :64; } __attribute__((aligned(8)));
+ __u64 tstamp;
+ __u32 wire_len, gso_segs;
+ union { struct bpf_sock *sk; __u64 :64; } __attribute__((aligned(8)));
 };
 
 struct bpf_tunnel_key {
@@ -941,6 +984,11 @@ struct bpf_sock {
 	__u32 src_port;		/* Allows 4-byte read.
 				 * Stored in host byte order
 				 */
+    __u32 dst_port; /* Network byte order in the lower 16 bits. */
+    __u32 dst_ip4;
+    __u32 dst_ip6[4];
+    __u32 state;
+    __s32 rx_queue_mapping; /* -1 means unavailable. */
 };
 
 #define XDP_PACKET_HEADROOM 256
@@ -1066,4 +1114,30 @@ struct bpf_cgroup_dev_ctx {
 	__u32 minor;
 };
 
+
+/* Socket-option context uses the standard 64-bit-aligned BPF pointer ABI. */
+#define __bpf_md_ptr(type, name) \
+union { type name; __u64 :64; } __attribute__((aligned(8)))
+
+struct bpf_sockopt {
+    __bpf_md_ptr(struct bpf_sock *, sk);
+    __bpf_md_ptr(void *, optval);
+    __bpf_md_ptr(void *, optval_end);
+    __s32 level;
+    __s32 optname;
+    __s32 optlen;
+    __s32 retval;
+};
+
 #endif /* _UAPI__LINUX_BPF_H__ */
+
+/* Ring buffer ABI, synchronized with Linux 5.10. */
+#define BPF_RB_NO_WAKEUP (1ULL << 0)
+#define BPF_RB_FORCE_WAKEUP (1ULL << 1)
+#define BPF_RB_AVAIL_DATA 0
+#define BPF_RB_RING_SIZE 1
+#define BPF_RB_CONS_POS 2
+#define BPF_RB_PROD_POS 3
+#define BPF_RINGBUF_BUSY_BIT (1U << 31)
+#define BPF_RINGBUF_DISCARD_BIT (1U << 30)
+#define BPF_RINGBUF_HDR_SZ 8

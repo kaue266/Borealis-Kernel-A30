@@ -133,6 +133,7 @@ typedef struct {
 struct sock;
 struct proto;
 struct net;
+struct bpf_sk_storage;
 
 typedef __u32 __bitwise __portpair;
 typedef __u64 __bitwise __addrpair;
@@ -501,6 +502,9 @@ struct sock {
 	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);
 	void                    (*sk_destruct)(struct sock *sk);
+#ifdef CONFIG_BPF_SYSCALL
+	struct bpf_sk_storage __rcu *sk_bpf_storage;
+#endif
 	struct rcu_head		sk_rcu;
 	struct sock_reuseport __rcu	*sk_reuseport_cb;
 };

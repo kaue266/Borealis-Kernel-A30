@@ -14,13 +14,14 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/vmalloc.h>
 #include <linux/filter.h>
 #include <linux/perf_event.h>
 
 #include "map_in_map.h"
 
 #define ARRAY_CREATE_FLAG_MASK \
-	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY)
+	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY | BPF_F_MMAPABLE)
 
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
@@ -51,6 +52,43 @@ static int bpf_array_alloc_percpu(struct bpf_array *array)
 	return 0;
 }
 
+/* SPDX-License-Identifier: GPL-2.0-only
+ * Array mmap layout adapted from Linux v5.10 to the R24U allocator.
+ * Metadata stays in preceding pages and must never be mapped to userspace.
+ */
+static void *array_map_vmalloc_addr(struct bpf_array *array)
+{
+	return (char *)array - PAGE_ALIGN(sizeof(*array)) +
+		offsetof(struct bpf_array, value);
+}
+
+static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
+{
+	struct bpf_array *array = container_of(map, struct bpf_array, map);
+	u64 value_bytes = PAGE_ALIGN((u64)map->max_entries * array->elem_size);
+	u64 offset;
+	unsigned long length;
+	pgoff_t header_pages = PAGE_ALIGN(sizeof(*array)) >> PAGE_SHIFT;
+
+	if (map->map_type != BPF_MAP_TYPE_ARRAY ||
+	    !(map->map_flags & BPF_F_MMAPABLE) ||
+	    vma->vm_end <= vma->vm_start)
+		return -EINVAL;
+	length = vma->vm_end - vma->vm_start;
+	if ((vma->vm_start & (PAGE_SIZE - 1)) || (length & (PAGE_SIZE - 1)))
+		return -EINVAL;
+	/* Bound pgoff before shifting: addition/multiplication must not wrap. */
+	if (vma->vm_pgoff > (value_bytes >> PAGE_SHIFT))
+		return -EINVAL;
+	offset = (u64)vma->vm_pgoff << PAGE_SHIFT;
+	if (length > value_bytes - offset)
+		return -EINVAL;
+
+	return remap_vmalloc_range(vma, array_map_vmalloc_addr(array),
+				   vma->vm_pgoff + header_pages);
+}
+
+
 /* Called from syscall */
 static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 {
@@ -66,6 +104,11 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	    attr->value_size == 0 ||
 	    attr->map_flags & ~ARRAY_CREATE_FLAG_MASK ||
 	    (percpu && numa_node != NUMA_NO_NODE))
+		return ERR_PTR(-EINVAL);
+
+	/* FD/per-CPU arrays must never expose pointers through mmap. */
+	if (attr->map_type != BPF_MAP_TYPE_ARRAY &&
+	    (attr->map_flags & BPF_F_MMAPABLE))
 		return ERR_PTR(-EINVAL);
 
 	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
@@ -100,6 +143,9 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	array_size = sizeof(*array);
 	if (percpu)
 		array_size += (u64) max_entries * sizeof(void *);
+	else if (attr->map_flags & BPF_F_MMAPABLE)
+		array_size = PAGE_ALIGN(array_size) +
+			PAGE_ALIGN((u64)max_entries * elem_size);
 	else
 		array_size += (u64) max_entries * elem_size;
 
@@ -119,7 +165,15 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 		return ERR_PTR(ret);
 
 	/* allocate all map elements and zero-initialize them */
-	array = bpf_map_area_alloc(array_size, numa_node);
+	if (attr->map_flags & BPF_F_MMAPABLE) {
+		void *data = bpf_map_area_mmapable_alloc(array_size, numa_node);
+		if (!data)
+			return ERR_PTR(-ENOMEM);
+		array = (struct bpf_array *)((char *)data + PAGE_ALIGN(sizeof(*array)) -
+			offsetof(struct bpf_array, value));
+	} else {
+		array = bpf_map_area_alloc(array_size, numa_node);
+	}
 	if (!array)
 		return ERR_PTR(-ENOMEM);
 	array->index_mask = index_mask;
@@ -329,10 +383,15 @@ static void array_map_free(struct bpf_map *map)
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
 		bpf_array_free_percpu(array);
 
-	bpf_map_area_free(array);
+	if (map->map_flags & BPF_F_MMAPABLE)
+		vfree(array_map_vmalloc_addr(array));
+	else
+		bpf_map_area_free(array);
 }
 
 const struct bpf_map_ops array_map_ops = {
+	.map_mmap = array_map_mmap,
+	.map_lookup_batch = bpf_array_lookup_batch,
 	.map_alloc = array_map_alloc,
 	.map_free = array_map_free,
 	.map_get_next_key = array_map_get_next_key,
@@ -343,6 +402,7 @@ const struct bpf_map_ops array_map_ops = {
 };
 
 const struct bpf_map_ops percpu_array_map_ops = {
+	.map_lookup_batch = bpf_array_lookup_batch,
 	.map_alloc = array_map_alloc,
 	.map_free = array_map_free,
 	.map_get_next_key = array_map_get_next_key,
