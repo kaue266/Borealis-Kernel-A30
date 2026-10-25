@@ -2271,13 +2271,17 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 			    const struct task_security_struct *old_tsec,
 			    const struct task_security_struct *new_tsec)
 {
+#ifdef CONFIG_KSU
 	static u32 ksu_sid;
 	char *secdata;
+#endif
 	int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
 	int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
 	int rc;
+#ifdef CONFIG_KSU
 	int error;
 	u32 seclen;
+#endif
 
 	if (!nnp && !nosuid)
 		return 0; /* neither NNP nor nosuid */
@@ -2285,6 +2289,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 	if (new_tsec->sid == old_tsec->sid)
 		return 0; /* No change in credentials */
 
+	// Borealis: KernelSU-only NNP exception.
+#ifdef CONFIG_KSU
 	if(!ksu_sid){
 		security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
 	}
@@ -2296,6 +2302,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 			return 0;
 		}
 	}
+
+#endif
 
 	/*
 	 * The only transitions we permit under NNP or nosuid
@@ -3394,7 +3402,7 @@ static int ioctl_has_perm(const struct cred *cred, struct file *file,
 
 	isec = inode_security(inode);
 	rc = avc_has_extended_perms(ssid, isec->sid, isec->sclass,
-			requested, driver, xperm, &ad);
+			requested, driver, AVC_EXT_IOCTL, xperm, &ad);
 out:
 	return rc;
 }
@@ -4934,6 +4942,25 @@ static int selinux_tun_dev_open(void *security)
 	return 0;
 }
 
+/* Enforce the actual 16-bit message type using isolated xperm cache entries.
+ * Use this kernel's existing network audit structure for denial reporting. */
+static int nlmsg_sock_has_extended_perms(struct sock *sk, u32 perms, u16 type)
+{
+	struct sk_security_struct *sksec = sk->sk_security;
+	struct common_audit_data ad;
+	struct lsm_network_audit net = {0,};
+
+	if (!sksec)
+		return -EFAULT;
+	if (sksec->sid == SECINITSID_KERNEL)
+		return 0;
+	ad.type = LSM_AUDIT_DATA_NET;
+	ad.u.net = &net;
+	net.sk = sk;
+	return avc_has_extended_perms(current_sid(), sksec->sid, sksec->sclass,
+			perms, type >> 8, AVC_EXT_NLMSG, type & 0xff, &ad);
+}
+
 static int selinux_nlmsg_perm(struct sock *sk, struct sk_buff *skb)
 {
 	int rc = 0;
@@ -4959,7 +4986,10 @@ static int selinux_nlmsg_perm(struct sock *sk, struct sk_buff *skb)
 
 		rc = selinux_nlmsg_lookup(sclass, nlh->nlmsg_type, &perm);
 		if (rc == 0) {
-			rc = sock_has_perm(current, sk, perm);
+			if (selinux_policycap_netlink_xperm)
+				rc = nlmsg_sock_has_extended_perms(sk, perm, nlh->nlmsg_type);
+			else
+				rc = sock_has_perm(current, sk, perm);
 			if (rc)
 				return rc;
 		} else if (rc == -EINVAL) {

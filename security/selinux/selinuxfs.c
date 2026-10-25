@@ -48,7 +48,9 @@ static char *policycap_names[] = {
 	"network_peer_controls",
 	"open_perms",
 	"redhat1",
-	"always_check_network"
+	"always_check_network",
+	"unknown4", "unknown5", "unknown6", "unknown7", "unknown8",
+	"netlink_xperm"
 };
 
 unsigned int selinux_checkreqprot = CONFIG_SECURITY_SELINUX_CHECKREQPROT_VALUE;
@@ -1724,7 +1726,7 @@ static int sel_make_policycap(void)
 
 	sel_remove_entries(policycap_dir);
 
-	for (iter = 0; iter <= POLICYDB_CAPABILITY_MAX; iter++) {
+	for (iter = 0; iter <= POLICYDB_CAPABILITY_NETLINK_XPERM; iter++) {
 		if (iter < ARRAY_SIZE(policycap_names))
 			dentry = d_alloc_name(policycap_dir,
 					      policycap_names[iter]);

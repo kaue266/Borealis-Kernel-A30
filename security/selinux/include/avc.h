@@ -157,8 +157,12 @@ int avc_has_perm_flags(u32 ssid, u32 tsid,
 		       struct common_audit_data *auditdata,
 		       int flags);
 
+/* Extended permission cache categories; not policy permission masks. */
+#define AVC_EXT_IOCTL (1 << 0)
+#define AVC_EXT_NLMSG (1 << 1)
+
 int avc_has_extended_perms(u32 ssid, u32 tsid, u16 tclass, u32 requested,
-		u8 driver, u8 perm, struct common_audit_data *ad);
+		u8 driver, u8 base_perm, u8 perm, struct common_audit_data *ad);
 
 
 u32 avc_policy_seqno(void);

@@ -154,6 +154,10 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
 
 	switch (sclass) {
 	case SECCLASS_NETLINK_ROUTE_SOCKET:
+		if (selinux_policycap_netlink_xperm) {
+			*perm = NETLINK_ROUTE_SOCKET__NLMSG;
+			return 0;
+		}
 		/* RTM_MAX always point to RTM_SETxxxx, ie RTM_NEWxxx + 3 */
 		BUILD_BUG_ON(RTM_MAX != (RTM_NEWNSID + 3));
 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_route_perms,
@@ -161,17 +165,29 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
 		break;
 
 	case SECCLASS_NETLINK_TCPDIAG_SOCKET:
+		if (selinux_policycap_netlink_xperm) {
+			*perm = NETLINK_TCPDIAG_SOCKET__NLMSG;
+			return 0;
+		}
 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_tcpdiag_perms,
 				 sizeof(nlmsg_tcpdiag_perms));
 		break;
 
 	case SECCLASS_NETLINK_XFRM_SOCKET:
+		if (selinux_policycap_netlink_xperm) {
+			*perm = NETLINK_XFRM_SOCKET__NLMSG;
+			return 0;
+		}
 		BUILD_BUG_ON(XFRM_MSG_MAX != XFRM_MSG_MAPPING);
 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_xfrm_perms,
 				 sizeof(nlmsg_xfrm_perms));
 		break;
 
 	case SECCLASS_NETLINK_AUDIT_SOCKET:
+		if (selinux_policycap_netlink_xperm) {
+			*perm = NETLINK_AUDIT_SOCKET__NLMSG;
+			return 0;
+		}
 		if ((nlmsg_type >= AUDIT_FIRST_USER_MSG &&
 		     nlmsg_type <= AUDIT_LAST_USER_MSG) ||
 		    (nlmsg_type >= AUDIT_FIRST_USER_MSG2 &&
