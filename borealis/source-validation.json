@@ -1,0 +1,12 @@
+{
+  "source_patch_proofs": [
+    {
+      "project": "kernel/borealis/eureka",
+      "base": "e1b8464bb29ce5bcb9d52bfcfc71bc2563e12563",
+      "clean_base_apply": true,
+      "files_compared": 49
+    }
+  ],
+  "full_kernel_build_run_for_publication": false,
+  "source_matches_installed_kernel": false
+}

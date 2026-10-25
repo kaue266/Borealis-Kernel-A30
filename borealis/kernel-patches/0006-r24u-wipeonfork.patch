@@ -1,0 +1,128 @@
+--- a/arch/alpha/include/uapi/asm/mman.h
++++ b/arch/alpha/include/uapi/asm/mman.h
+@@ -62,6 +62,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+--- a/arch/mips/include/uapi/asm/mman.h
++++ b/arch/mips/include/uapi/asm/mman.h
+@@ -89,6 +89,8 @@
+ #define MADV_DONTDUMP	16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+--- a/arch/parisc/include/uapi/asm/mman.h
++++ b/arch/parisc/include/uapi/asm/mman.h
+@@ -58,6 +58,8 @@
+ #define MADV_DONTDUMP   69		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	70		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 71	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 72	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+--- a/arch/xtensa/include/uapi/asm/mman.h
++++ b/arch/xtensa/include/uapi/asm/mman.h
+@@ -101,6 +101,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -814,6 +814,7 @@
+ 		[ilog2(VM_NORESERVE)]	= "nr",
+ 		[ilog2(VM_HUGETLB)]	= "ht",
+ 		[ilog2(VM_ARCH_1)]	= "ar",
++		[ilog2(VM_WIPEONFORK)]	= "wf",
+ 		[ilog2(VM_DONTDUMP)]	= "dd",
+ #ifdef CONFIG_MEM_SOFT_DIRTY
+ 		[ilog2(VM_SOFTDIRTY)]	= "sd",
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -183,6 +183,7 @@
+ #define VM_ACCOUNT	0x00100000	/* Is a VM accounted object */
+ #define VM_NORESERVE	0x00200000	/* should the VM suppress accounting */
+ #define VM_HUGETLB	0x00400000	/* Huge TLB Page VM */
++#define VM_WIPEONFORK	0x00800000	/* Zero this VMA in fork children. */
+ #define VM_ARCH_1	0x01000000	/* Architecture-specific flag */
+ #define VM_ARCH_2	0x02000000
+ #define VM_DONTDUMP	0x04000000	/* Do not include in the core dump */
+--- a/include/uapi/asm-generic/mman-common.h
++++ b/include/uapi/asm-generic/mman-common.h
+@@ -56,6 +56,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_DONTDUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -494,7 +494,10 @@
+ 		if (retval)
+ 			goto fail_nomem_policy;
+ 		tmp->vm_mm = mm;
+-		if (anon_vma_fork(tmp, mpnt))
++		if (tmp->vm_flags & VM_WIPEONFORK) {
++			/* No inherited pages or parent anon_vma; prepare on fault. */
++			tmp->anon_vma = NULL;
++		} else if (anon_vma_fork(tmp, mpnt))
+ 			goto fail_nomem_anon_vma_fork;
+ 		tmp->vm_flags &=
+ 			~(VM_LOCKED|VM_LOCKONFAULT|VM_UFFD_MISSING|VM_UFFD_WP);
+@@ -541,7 +544,8 @@
+ 
+ 		uksm_vma_add_new(tmp);
+ 		mm->map_count++;
+-		retval = copy_page_range(mm, oldmm, mpnt);
++		if (!(tmp->vm_flags & VM_WIPEONFORK))
++			retval = copy_page_range(mm, oldmm, mpnt);
+ 
+ 		if (tmp->vm_ops && tmp->vm_ops->open)
+ 			tmp->vm_ops->open(tmp);
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -71,6 +71,17 @@
+ 			goto out;
+ 		}
+ 		new_flags &= ~VM_DONTCOPY;
++		break;
++	case MADV_WIPEONFORK:
++		/* Only private anonymous mappings can be wiped on fork. */
++		if (vma->vm_file || (vma->vm_flags & VM_SHARED)) {
++			error = -EINVAL;
++			goto out;
++		}
++		new_flags |= VM_WIPEONFORK;
++		break;
++	case MADV_KEEPONFORK:
++		new_flags &= ~VM_WIPEONFORK;
+ 		break;
+ 	case MADV_DONTDUMP:
+ 		new_flags |= VM_DONTDUMP;
+@@ -406,6 +417,8 @@
+ #endif
+ 	case MADV_DONTDUMP:
+ 	case MADV_DODUMP:
++	case MADV_WIPEONFORK:
++	case MADV_KEEPONFORK:
+ 		return true;
+ 
+ 	default:

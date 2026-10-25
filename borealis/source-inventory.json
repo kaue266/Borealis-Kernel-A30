@@ -1,0 +1,574 @@
+{
+  "files": [
+    {
+      "path": "arch/alpha/include/uapi/asm/mman.h",
+      "bytes": 3499,
+      "sha256": "dedf1bcf8eb5c4f352cf8c6525aada8c735b9e8dd0e090ccd136dddb7f0bfd43"
+    },
+    {
+      "path": "arch/mips/include/uapi/asm/mman.h",
+      "bytes": 4307,
+      "sha256": "7cd5c8fe5f1441bcac1bfce5e8229886f3e62e02b00cc6b0137fe39c37a74b68"
+    },
+    {
+      "path": "arch/parisc/include/uapi/asm/mman.h",
+      "bytes": 3510,
+      "sha256": "e68fc4f082f5c2538fe779bd4d0fe6622fa7c3f65798bc86b73eea06e99fab34"
+    },
+    {
+      "path": "arch/xtensa/include/uapi/asm/mman.h",
+      "bytes": 4539,
+      "sha256": "8a3e65cc494cd2710201218b759f4e0930c5d2c99d6719176935a19c639f8cf8"
+    },
+    {
+      "path": "borealis/config/rom-prebuilt-kernel.config",
+      "bytes": 141703,
+      "sha256": "11d4afd8f926944303ea796f0fd724783507124f353e6f20c97d6c88830424f4"
+    },
+    {
+      "path": "borealis/kernel-patches/0001-r24u-cgroup-sockopt.patch",
+      "bytes": 18319,
+      "sha256": "b4639af451915aa5b91f8e3861838285370655fa84649369005af385c6bf24b2"
+    },
+    {
+      "path": "borealis/kernel-patches/0002-r24u-map-batch.patch",
+      "bytes": 12661,
+      "sha256": "78030ab2c1f27adf2bd8a8109a1e766295ccdf517f0a13b6e4663ec784c74e01"
+    },
+    {
+      "path": "borealis/kernel-patches/0003-r24u-borrowed-socket.patch",
+      "bytes": 16178,
+      "sha256": "fdbd6cafee67f5b0934f209fdbe2b544fcf65c92e2e94b129383d4f7767dba3b"
+    },
+    {
+      "path": "borealis/kernel-patches/0004-r24u-array-mmap.patch",
+      "bytes": 6682,
+      "sha256": "fb7f91abaeb327c213170180c2e9a4a365a1b058161d92e047587c5f8d512661"
+    },
+    {
+      "path": "borealis/kernel-patches/0005-r24u-socket-release.patch",
+      "bytes": 7246,
+      "sha256": "d8b9d1aed00ec6e96f4c1d995593eae92b0720b2f154f6a75e095276d6117d58"
+    },
+    {
+      "path": "borealis/kernel-patches/0006-r24u-wipeonfork.patch",
+      "bytes": 4344,
+      "sha256": "7d90823267b6e60d3d75b3034aa352d310c7fc934881f39c576a2d6f46a86c1b"
+    },
+    {
+      "path": "borealis/kernel-patches/batch-array.c",
+      "bytes": 2228,
+      "sha256": "7c370a4b71c48f407133cd7ee3e08eb3763e5045797906b758e68867d8dc5d02"
+    },
+    {
+      "path": "borealis/kernel-patches/batch-htab.c",
+      "bytes": 5052,
+      "sha256": "65fa6200c318ed2c176cc29cda8cd26b5c4100bc4680e3fc7ca8f8eaf8a057d5"
+    },
+    {
+      "path": "borealis/kernel-patches/batch-syscall.c",
+      "bytes": 1045,
+      "sha256": "4c9f7218ae6bbac86bd69b50379ed0b4fb753a2e3880ac0a37270aaf7b123123"
+    },
+    {
+      "path": "borealis/kernel-patches/mmap-array.c",
+      "bytes": 1281,
+      "sha256": "b4969f549243bde7ee3a7a15dede5ff70f891c24c67f0f9d5da547fe01d92203"
+    },
+    {
+      "path": "borealis/kernel-patches/mmap-syscall.c",
+      "bytes": 1348,
+      "sha256": "0749c117e5154c284e97182d4b56253b5e036fe05c1309ce4308888bb99ba498"
+    },
+    {
+      "path": "borealis/kernel-patches/r24u-complete-worktree.patch",
+      "bytes": 77690,
+      "sha256": "b0024fe00a279d309a633468e4b1c5e2186bbccc354fadb178e9d29bf214b9e5"
+    },
+    {
+      "path": "borealis/kernel-patches/r24u-cpu-dt-fallback.patch",
+      "bytes": 5663,
+      "sha256": "058cd63b5273475fd70d881235034beb328178e01a3ea3ad45b1480c1d0d2787"
+    },
+    {
+      "path": "borealis/kernel-patches/release-cgroup.c",
+      "bytes": 495,
+      "sha256": "b4a7d2c038d90db74e289a3aed85eec7ca6a4f0dbbcd1af68585d03ed1d21124"
+    },
+    {
+      "path": "borealis/kernel-patches/release-filter.c",
+      "bytes": 1086,
+      "sha256": "9d637723247c6e7b4c13287dd89662219a5e44cec656df5f99778f3bb3be78b2"
+    },
+    {
+      "path": "borealis/kernel-patches/socket-readonly.c",
+      "bytes": 1432,
+      "sha256": "8b03e959e3311d0b20147e1a295fa97aabee3a4804e3d3f249c29cad31513fc5"
+    },
+    {
+      "path": "borealis/kernel-patches/socket-verifier-access.c",
+      "bytes": 988,
+      "sha256": "28d4381f58299b6249b2cc10ae8ff196cb4b68bde077b26c7c5e96ce668ec52c"
+    },
+    {
+      "path": "borealis/kernel-patches/sockopt.c",
+      "bytes": 7381,
+      "sha256": "a84ca95427b5b0bdd8ebd7bd376daca581b88f365b18ba0b3f54a6579f6dd8ad"
+    },
+    {
+      "path": "borealis/source-validation.json",
+      "bytes": 313,
+      "sha256": "114d855ce7ae0a8c8591e1744877ce5b11f03e4ab8165a5966cd7b7b330c851d"
+    },
+    {
+      "path": "borealis/tests/a30_fvmap_legacy.h",
+      "bytes": 3093,
+      "sha256": "c13965cd794d39cce62fc087f705511650b6cf4b4220256fa872aac9dfa43b74"
+    },
+    {
+      "path": "borealis/tests/a30_fvmap_legacy_test.c",
+      "bytes": 3667,
+      "sha256": "3dd10bad47416d06b19d038df102b07a24bf210f42b500575b7de0e2ee18b84d"
+    },
+    {
+      "path": "borealis/tests/bpf_backport_chain_test.py",
+      "bytes": 3407,
+      "sha256": "3250f54abefe7a8bf517525d2477ba3679bda91f5a3e8057ecb7223af8e25164"
+    },
+    {
+      "path": "borealis/tests/bpf_batch_test.py",
+      "bytes": 16048,
+      "sha256": "e0ae289eea786d53e65c7c1e10d52620390b1b72bbb80afac201e2da8b864a4b"
+    },
+    {
+      "path": "borealis/tests/bpf_mmap_device_test.c",
+      "bytes": 4747,
+      "sha256": "871b5e291ae723e83497e76716d8c1c73916f9304ad62d48770bc107212a88f4"
+    },
+    {
+      "path": "borealis/tests/bpf_mmap_test.py",
+      "bytes": 14669,
+      "sha256": "13b322f58db47f41efbeb2700ef1495158de53cb5ebd6683dc8eb32c65093684"
+    },
+    {
+      "path": "borealis/tests/bpf_network_context_device_test.c",
+      "bytes": 2816,
+      "sha256": "07b6718614f222bbc9f444d584fe1e31f7a1c73a96da0246b4fc2cb6f22d62e5"
+    },
+    {
+      "path": "borealis/tests/bpf_owned_socket_device_test.c",
+      "bytes": 4261,
+      "sha256": "363e9fae0bda5af5a5133eb866ff7036a2f6970b34d61688669e7ab4381c4a19"
+    },
+    {
+      "path": "borealis/tests/bpf_probe_fs_flags.h",
+      "bytes": 419,
+      "sha256": "9f95f0ce1843815234ae58ab0deff3740b0504af537e99b7fce8c457f1d8aa04"
+    },
+    {
+      "path": "borealis/tests/bpf_probe_runtime.h",
+      "bytes": 4491,
+      "sha256": "2f886d2c7c8daf2a2b535aae7586c9f2bd0eeb861bdf05c584a8c4fb45636cfb"
+    },
+    {
+      "path": "borealis/tests/bpf_socket_pointer_test.py",
+      "bytes": 18710,
+      "sha256": "bede5848767cec956664e8a343084e463653411f47706ccb9e638f06a0bb7d7a"
+    },
+    {
+      "path": "borealis/tests/bpf_socket_release_device_test.c",
+      "bytes": 7618,
+      "sha256": "21a7d8767165ab4120ec18901858a7838ad2f624eed2242c4e89578dad0884c6"
+    },
+    {
+      "path": "borealis/tests/bpf_socket_release_test.py",
+      "bytes": 17710,
+      "sha256": "48b4a6e30159e65155af0b5bb0fda4e4997c2e6d1aae1aa3bd3659b5ad42c48d"
+    },
+    {
+      "path": "borealis/tests/bpf_sockopt_test.py",
+      "bytes": 12891,
+      "sha256": "e7859b3fe8d10a6a6be0c4de7b1b305e8a6464fe3a90d7e7c8a7a345168eb7dd"
+    },
+    {
+      "path": "borealis/tests/bpf_storage_ring_device_test.c",
+      "bytes": 6779,
+      "sha256": "2ac758326297c14f0aa295155fe890c8e4aa074932bed036bdf4b09e6249eda8"
+    },
+    {
+      "path": "borealis/tests/cpu_dt_fallback_test.py",
+      "bytes": 8680,
+      "sha256": "aeec3a671523dbbab69772749fcc8c9bbe5623b0130822b484c81352625ed0ca"
+    },
+    {
+      "path": "borealis/tests/device-bpf-probe.c",
+      "bytes": 3039,
+      "sha256": "879d39f3622f488cbb68ec7ea7c49d37365c96304113c20b84107cbbb14e6e32"
+    },
+    {
+      "path": "borealis/tests/kernel-gpu-dt.py",
+      "bytes": 2904,
+      "sha256": "3f050799899423012312043eca3bb4c69e285747e03571a1aee8f112e4c6499a"
+    },
+    {
+      "path": "borealis/tests/kernel-gpu-table.py",
+      "bytes": 3291,
+      "sha256": "d1122c944651b45094eb1761b3e0492d992853fc6b05db0d2dd7cf80415661c0"
+    },
+    {
+      "path": "borealis/tools/apply-bpf-backports.py",
+      "bytes": 3286,
+      "sha256": "5edd69005b58d77488fba3804e4c0dbb57661412e9e0e83da5bd9afa2f055d91"
+    },
+    {
+      "path": "borealis/tools/apply-bpf-sockopt.py",
+      "bytes": 2271,
+      "sha256": "afdc1ce233dc0a12e46da74ed633cc70708cb41fd75da9ba03177d0661ec323b"
+    },
+    {
+      "path": "borealis/tools/apply-wipeonfork-backport.py",
+      "bytes": 6128,
+      "sha256": "d0d6f7db15258faee2c4e68ed7a2bbe75f05f05827a77d7c705ba0ca76069dde"
+    },
+    {
+      "path": "borealis/tools/audit-kernels.py",
+      "bytes": 4333,
+      "sha256": "9c04fe646b3ef3982cb31f9ad18466ec223cc258f30f851114b0a291a552f74f"
+    },
+    {
+      "path": "borealis/tools/capture-kernel-build-source.py",
+      "bytes": 2278,
+      "sha256": "0fbe865a991d90516d67c510c460e456a1deac13be995eec159dade5f2e87298"
+    },
+    {
+      "path": "borealis/tools/check-cpu-dt-fallback.py",
+      "bytes": 2017,
+      "sha256": "7598c03982688c5dc82ecac60ca0c5b05e43715d9c16a2a7e53d79a8efd741df"
+    },
+    {
+      "path": "borealis/tools/export-kernel-pair.py",
+      "bytes": 2085,
+      "sha256": "cc6d49c81b5ccb99832af07b2e73ed467e6018d432ad7cbea5beede18e0ee786"
+    },
+    {
+      "path": "borealis/tools/port-bpf-batch.py",
+      "bytes": 5226,
+      "sha256": "c5db997da545adda7d3470df2e7f2e1f671d6050e05574c7e9e072ab592e2c95"
+    },
+    {
+      "path": "borealis/tools/port-bpf-mmap.py",
+      "bytes": 6627,
+      "sha256": "d747ba097953545761d9a3ca3a69c8bfca59a523069fc16fd12a2d38163327e6"
+    },
+    {
+      "path": "borealis/tools/port-bpf-socket-pointer.py",
+      "bytes": 15072,
+      "sha256": "906f8454899a38f3f88f534647a9f1e93a5cd0df55873cf38cfb4d1d2feafe10"
+    },
+    {
+      "path": "borealis/tools/port-bpf-socket-release.py",
+      "bytes": 7641,
+      "sha256": "e22eba67dda431c514c9e9323790b6f14d9a3c35513e96f82f46ea581c4a16db"
+    },
+    {
+      "path": "borealis/tools/port-bpf-sockopt.py",
+      "bytes": 11839,
+      "sha256": "2e8641d0c5296f919f70e38e72c812cf86350be88a6cd9f30383a37a37297cb3"
+    },
+    {
+      "path": "borealis/tools/port-cpu-dt-fallback.py",
+      "bytes": 6715,
+      "sha256": "1f270508f45451b3e6d7146f3df1dd991b3cba716ec82936ad15fade9f8f8ffd"
+    },
+    {
+      "path": "borealis/tools/prepare-kernel.py",
+      "bytes": 7127,
+      "sha256": "ebf240ed32dcc58fc806d1daa5fd75b44baa7d52700918922401a22af0284c65"
+    },
+    {
+      "path": "borealis/tools/record-bpf-socket-proof.py",
+      "bytes": 3473,
+      "sha256": "cd5583695c43ce2649704264736cc28fd6ab61e5184d686c8087e587d4c5d4ff"
+    },
+    {
+      "path": "borealis/tools/verify-kernel-pair-current.py",
+      "bytes": 2358,
+      "sha256": "724ec6f802445c452d5a82eb406a05984cb129e449356e80a5011e18a1cf80d3"
+    },
+    {
+      "path": "borealis/tools/verify-wipeonfork-linked.py",
+      "bytes": 3162,
+      "sha256": "132410f4a7a5ff649475bddb051ee6362ebe61fbf82eb909238ab6ca1008552b"
+    },
+    {
+      "path": "BOREALIS.md",
+      "bytes": 1012,
+      "sha256": "c2a02c306697e9174a81962eb9c8758620c68885e9237944fa2058e24cdfbcaf"
+    },
+    {
+      "path": "diagnostic-artifacts/compiled-pair.json",
+      "bytes": 8252,
+      "sha256": "d21ef53a4f40ebb140e923961228796b31e5b647c3d1213c9ce354e6105df711"
+    },
+    {
+      "path": "diagnostic-artifacts/kernelsu/kernel.config",
+      "bytes": 141722,
+      "sha256": "29f5393aafb8f43d6d9abef84d25fe1879f35c6e462d070af6f2a1ff5636f3ce"
+    },
+    {
+      "path": "diagnostic-artifacts/main/kernel.config",
+      "bytes": 141703,
+      "sha256": "11d4afd8f926944303ea796f0fd724783507124f353e6f20c97d6c88830424f4"
+    },
+    {
+      "path": "drivers/cpufreq/exynos-acme.c",
+      "bytes": 40485,
+      "sha256": "d8a8e2958ff5f65477efdf10b064db4b5030985be36a00ed70e628247c466dc0"
+    },
+    {
+      "path": "drivers/cpufreq/exynos-ufc.c",
+      "bytes": 21082,
+      "sha256": "576b23456fc8bce436ae8b0aadfdedeb1666ac7e89528f3b956a1f172123d883"
+    },
+    {
+      "path": "drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c",
+      "bytes": 76308,
+      "sha256": "7c61d306fa4b35fc5bf0792b1db136a37c26cdb37a9a19a20e37a5e34b1601fb"
+    },
+    {
+      "path": "drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c",
+      "bytes": 26854,
+      "sha256": "d26e52e91e6dd0fa724c7eec9dfb87b15e30cca3086876509b8c810c31eb6e6e"
+    },
+    {
+      "path": "drivers/input/input.c",
+      "bytes": 82573,
+      "sha256": "6675f548222b10a835c3340abe3caf04fcfcd97b7fd4f5590d164464a25496ef"
+    },
+    {
+      "path": "drivers/trace/exynos-ss.c",
+      "bytes": 124283,
+      "sha256": "f2c828764d8e92ff69d95917cd8d64cb0bb188b06b9ac4002da72cfb985d3c5b"
+    },
+    {
+      "path": "fs/exec.c",
+      "bytes": 52063,
+      "sha256": "e0c7bc48aeffe30140410926527f70adccf6d27cb56cef15defeb1185845d45b"
+    },
+    {
+      "path": "fs/open.c",
+      "bytes": 31035,
+      "sha256": "0142616caef6eda673d547bde27ba40697679dfcefb13a807434e1e42165dd69"
+    },
+    {
+      "path": "fs/proc/task_mmu.c",
+      "bytes": 56358,
+      "sha256": "c231f0ceee861a723bc5345f6f61af9f7a6b2e7506d12647a5bc85e7fc323cd9"
+    },
+    {
+      "path": "fs/read_write.c",
+      "bytes": 30157,
+      "sha256": "a45a71cfe14388b5cac6cfc85294b8047bd2fdf19a980a6fcb45094792db7389"
+    },
+    {
+      "path": "fs/stat.c",
+      "bytes": 12337,
+      "sha256": "5a17d58623ad3937005be4c9390467a3bbb94befd256daf7a739bd5ff0a97662"
+    },
+    {
+      "path": "include/linux/bpf-cgroup.h",
+      "bytes": 9300,
+      "sha256": "ccb90f5604ee1f2842efc9d3dd8e83c504b87aee7f29b71f41c1e8f3ff8a813d"
+    },
+    {
+      "path": "include/linux/bpf.h",
+      "bytes": 20108,
+      "sha256": "2e5f0449e45403768a4e1dab20442801a964747ab636c8fbb56994b613c43da4"
+    },
+    {
+      "path": "include/linux/bpf_types.h",
+      "bytes": 2097,
+      "sha256": "7ea6d0e3bcaef00c49effaae06ce55278010cefc2eb0ad38536e960cb0413b0d"
+    },
+    {
+      "path": "include/linux/bpf_verifier.h",
+      "bytes": 5586,
+      "sha256": "86b6bcf4f48e7f5d36dac4d623795f99b9946cbf0e5c903bf3ed63249b36d9b1"
+    },
+    {
+      "path": "include/linux/filter.h",
+      "bytes": 28260,
+      "sha256": "7b3cd24e4023c09059fc2710c074c5c5cac032d30f0d749f5894d2ed6074289d"
+    },
+    {
+      "path": "include/linux/mm.h",
+      "bytes": 78595,
+      "sha256": "8396a11e11cd124175bda9590e3794c9daef6f4299d5da8d224dec2e07ee9b63"
+    },
+    {
+      "path": "include/net/bpf_sk_storage.h",
+      "bytes": 583,
+      "sha256": "4a9a017b65b37dacd9abe95f8a2a5958d5c1587e9bc37846d576a9922f847b91"
+    },
+    {
+      "path": "include/net/sock.h",
+      "bytes": 70928,
+      "sha256": "754c574cf011d47e35cad6923648ec1356c6e5a17ca51900fbde3979ddd6d423"
+    },
+    {
+      "path": "include/uapi/asm-generic/mman-common.h",
+      "bytes": 2991,
+      "sha256": "15626bcc863cd6870dc32365cda68bfbb97e7a0c241193aeadd8b168a04852f4"
+    },
+    {
+      "path": "include/uapi/linux/bpf.h",
+      "bytes": 34812,
+      "sha256": "68115088cad6a99f988d205952427fa470150b0d6dcd5bacfdee685f22c72947"
+    },
+    {
+      "path": "kernel/bpf/arraymap.c",
+      "bytes": 19057,
+      "sha256": "e6afc5bafc45e8f3ff2d44b6836657a0268fb9dedec4027bd4bd299c650948e3"
+    },
+    {
+      "path": "kernel/bpf/cgroup.c",
+      "bytes": 17958,
+      "sha256": "5b3b671f6bceecbc9eb50d6a0e43ec6cba25796d0b7bf10cf86b74f8cb2f8cd5"
+    },
+    {
+      "path": "kernel/bpf/core.c",
+      "bytes": 43100,
+      "sha256": "3246481a3bc507cab19e65737748e6d39a706f843780e18e71e935c6f668b1a8"
+    },
+    {
+      "path": "kernel/bpf/hashtab.c",
+      "bytes": 38797,
+      "sha256": "63a317c33b7cee5b0eb057f0b9e247d1923cc4af267f9b956fa37da38a31a5fc"
+    },
+    {
+      "path": "kernel/bpf/Makefile",
+      "bytes": 913,
+      "sha256": "7dbccd578d62abf02a1e63439125ea83def0fac82b247b44c3e7e552181fa798"
+    },
+    {
+      "path": "kernel/bpf/ringbuf.c",
+      "bytes": 13836,
+      "sha256": "24dbb9be1a3cc77439c77a64f48fb4db6b4670ec344654123996e20f9c22de9c"
+    },
+    {
+      "path": "kernel/bpf/sockopt.c",
+      "bytes": 7648,
+      "sha256": "423c5232edc800f19e45ca969a4ade4c705d19d5bd96402550f2b34752531ab7"
+    },
+    {
+      "path": "kernel/bpf/syscall.c",
+      "bytes": 49072,
+      "sha256": "eb43f1d29664eafc41ae881f9ba6f36b3e2b343a4531d7020b6ab6be36fa2b01"
+    },
+    {
+      "path": "kernel/bpf/verifier.c",
+      "bytes": 144808,
+      "sha256": "414136f15b29d6ae63a17f380a5c261bccb19a1cbabed57336de66eaf7467a6c"
+    },
+    {
+      "path": "kernel/fork.c",
+      "bytes": 59954,
+      "sha256": "110455883f8907340f20e341a0f1fe14c954acc67b9b786ad080f3bf5dea44bc"
+    },
+    {
+      "path": "mm/madvise.c",
+      "bytes": 14568,
+      "sha256": "ccc0d7dec819d3793e7644f74f58b310c6cc37c238fe11a9eda62c1fc4acd874"
+    },
+    {
+      "path": "net/compat.c",
+      "bytes": 25906,
+      "sha256": "c42c8777160775c15149be882e2de5f3cfb2ef8571c49bb0ae52612aa54f56b0"
+    },
+    {
+      "path": "net/core/bpf_sk_storage.c",
+      "bytes": 21622,
+      "sha256": "0fc37d19986f71cbc18496be05b1faa5fa7babefd6e1a1bce8b79d07cdc3bb8f"
+    },
+    {
+      "path": "net/core/filter.c",
+      "bytes": 134666,
+      "sha256": "0dada6340af4f7905380c465f53ecfbdf1d6b43063737f413e976c1a997c125a"
+    },
+    {
+      "path": "net/core/Makefile",
+      "bytes": 1078,
+      "sha256": "3b447a1a134b960694e10c3e76e2a8e3c00924ee6fab227c2ea4ae4e887f1f63"
+    },
+    {
+      "path": "net/core/sock.c",
+      "bytes": 84518,
+      "sha256": "be9a99beaa7b36c52870c716953630c0f3b03c9d7fd7e3e0b24fc673f3672f7b"
+    },
+    {
+      "path": "net/ipv4/af_inet.c",
+      "bytes": 48919,
+      "sha256": "a3f6d2477da11ab0fa1984fed58488c0532b9db74cb6dc9b0b43c940d54447b6"
+    },
+    {
+      "path": "net/socket.c",
+      "bytes": 85009,
+      "sha256": "0a09288598f6fd9dfe8e14b7508f7f4204c342f35eb5152eebaae76a7bf0a010"
+    },
+    {
+      "path": "README.md",
+      "bytes": 213,
+      "sha256": "4126df7fa839238d7f5695aecb33e9a9e865fecec7ea4cca5964653b1739d8c1"
+    },
+    {
+      "path": "security/selinux/avc.c",
+      "bytes": 31817,
+      "sha256": "2356c79548ec4a3a86181b7d28522b1a61c9912ba3e0a49e5c74594e036ccc1d"
+    },
+    {
+      "path": "security/selinux/hooks.c",
+      "bytes": 170096,
+      "sha256": "1a097fe318de37de335104b466e4934b5dc3ad41d9798aa4cc81ad370baacaa9"
+    },
+    {
+      "path": "security/selinux/include/avc.h",
+      "bytes": 5087,
+      "sha256": "45eab097a03711d3f7ab9f181eb64e1d9d84ac5d3aa689e26f280bf768204e9c"
+    },
+    {
+      "path": "security/selinux/include/classmap.h",
+      "bytes": 6000,
+      "sha256": "68bac98c5275c045209c79262f4db880c2e7dbcd595799405d1194a4dec2e9c7"
+    },
+    {
+      "path": "security/selinux/include/security.h",
+      "bytes": 8370,
+      "sha256": "460db9226f943d9632677c17b2717ffae2360a6da0fff5d5cd6910745a779599"
+    },
+    {
+      "path": "security/selinux/nlmsgtab.c",
+      "bytes": 8418,
+      "sha256": "456bc931abb975633db89f87a75ba6b9bfccc6b9f69fe7ff3e2f74d0a1820fc2"
+    },
+    {
+      "path": "security/selinux/selinuxfs.c",
+      "bytes": 43800,
+      "sha256": "c77aec2c2fcbe9460a7323bbe3a9cfdb5c405458cf79affd55c786b356d15b60"
+    },
+    {
+      "path": "security/selinux/ss/avtab.c",
+      "bytes": 18915,
+      "sha256": "9ac24d571e1e6bc92d49832ef4553246a7392967143c7ccc782b6f4499e7b616"
+    },
+    {
+      "path": "security/selinux/ss/avtab.h",
+      "bytes": 3977,
+      "sha256": "fcec5ba67c7adcd63ad4c90f96ebf9268f1470ca6405f5720f2cc66d365d4f62"
+    },
+    {
+      "path": "security/selinux/ss/services.c",
+      "bytes": 83085,
+      "sha256": "0d91f19aa528d431585eab03ce5173b82d8afbabbc31161427e23154d2f16413"
+    }
+  ]
+}

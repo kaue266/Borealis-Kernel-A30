@@ -1,0 +1,230 @@
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -153,6 +153,7 @@
+ 	BPF_CGROUP_UDP6_RECVMSG,
+ 	BPF_CGROUP_GETSOCKOPT = 21,
+ 	BPF_CGROUP_SETSOCKOPT,
++	BPF_CGROUP_INET_SOCK_RELEASE = 23,
+ 	__MAX_BPF_ATTACH_TYPE
+ };
+ 
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -101,6 +101,7 @@
+ 	ARG_PTR_TO_CTX,		/* pointer to context */
+ 	ARG_PTR_TO_SOCKET,	/* unmodified borrowed socket */
+ 	ARG_ANYTHING,		/* any (initialized) argument is ok */
++	ARG_PTR_TO_SOCK_CTX,	/* unmodified CGROUP_SOCK context */
+ };
+ 
+ /* type of values returned from helper functions */
+--- a/include/linux/bpf-cgroup.h
++++ b/include/linux/bpf-cgroup.h
+@@ -60,6 +60,8 @@
+ 				struct sk_buff *skb,
+ 				enum bpf_attach_type type);
+ 
++void __cgroup_bpf_run_sock_release(struct sock *sk);
++
+ int __cgroup_bpf_run_filter_sk(struct sock *sk,
+ 			    enum bpf_attach_type type);
+ 
+@@ -107,6 +109,13 @@
+ 	__ret;								       \
+ })
+ 
++#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) \
++do { \
++	typeof(sk) __sk = (sk); \
++	if (cgroup_bpf_enabled && __sk) \
++		__cgroup_bpf_run_sock_release(__sk); \
++} while (0)
++
+ #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk)				       \
+ 	BPF_CGROUP_RUN_SK_PROG(sk, BPF_CGROUP_INET_SOCK_CREATE)
+ 
+@@ -217,6 +226,7 @@
+ #define BPF_CGROUP_PRE_CONNECT_ENABLED(sk) (0)
+ #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
++#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) do { } while (0)
+ #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr) ({ 0; })
+--- a/kernel/bpf/cgroup.c
++++ b/kernel/bpf/cgroup.c
+@@ -504,6 +504,20 @@
+ }
+ EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);
+ 
++/* Release is a notification: every effective program runs, and its return
++ * value cannot deny closing the socket. The caller still owns the live sock.
++ * R24U's array runner holds RCU across the complete program sequence.
++ */
++void __cgroup_bpf_run_sock_release(struct sock *sk)
++{
++	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
++
++	(void)BPF_PROG_RUN_ARRAY_CHECK(
++		cgrp->bpf.effective[BPF_CGROUP_INET_SOCK_RELEASE], sk, BPF_PROG_RUN);
++}
++EXPORT_SYMBOL(__cgroup_bpf_run_sock_release);
++
++
+ /**
+  * __cgroup_bpf_run_filter_sock_addr() - Run a program on a sock and
+  *                                       provided by user sockaddr
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -1091,6 +1091,7 @@
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 		switch (expected_attach_type) {
+ 		case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 		case BPF_CGROUP_INET4_POST_BIND:
+ 		case BPF_CGROUP_INET6_POST_BIND:
+ 			return 0;
+@@ -1342,6 +1343,7 @@
+ 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
+ 		break;
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+ 	case BPF_CGROUP_INET6_POST_BIND:
+ 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
+@@ -1419,6 +1421,7 @@
+ 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
+ 		break;
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+ 	case BPF_CGROUP_INET6_POST_BIND:
+ 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
+@@ -1485,6 +1488,7 @@
+ 	case BPF_CGROUP_INET_INGRESS:
+ 	case BPF_CGROUP_INET_EGRESS:
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_BIND:
+ 	case BPF_CGROUP_INET6_BIND:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+--- a/net/core/filter.c
++++ b/net/core/filter.c
+@@ -3586,6 +3586,16 @@
+ 					const struct bpf_prog *prog,
+ 					struct bpf_insn_access_aux *info)
+ {
++	/* Notification context is read-only; no legacy narrow-load rewriting. */
++	if (prog->expected_attach_type == BPF_CGROUP_INET_SOCK_RELEASE) {
++		if (type != BPF_READ || size != sizeof(__u32) ||
++		    off < 0 || off > sizeof(struct bpf_sock) - sizeof(__u32) ||
++		    (off & 3))
++			return false;
++		bpf_ctx_record_field_size(info, sizeof(__u32));
++		return true;
++	}
++
+ 	if (off < 0 || off >= sizeof(struct bpf_sock))
+ 		return false;
+ 	if (off % size != 0)
+@@ -4579,8 +4589,47 @@
+ 	.test_run		= bpf_prog_test_run_skb,
+ };
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * CGROUP_SOCK context is a live struct sock, never a struct sk_buff.
++ * The private argument constraint rejects adjusted context pointers.
++ */
++static const struct bpf_func_proto bpf_get_socket_cookie_sock_ctx_proto = {
++	.func = bpf_get_socket_cookie_sock,
++	.gpl_only = false,
++	.ret_type = RET_INTEGER,
++	.arg1_type = ARG_PTR_TO_SOCK_CTX,
++};
++
++BPF_CALL_1(bpf_get_socket_uid_sock_ctx, struct sock *, sk)
++{
++	kuid_t kuid = sock_net_uid(sock_net(sk), sk);
++
++	return from_kuid_munged(sock_net(sk)->user_ns, kuid);
++}
++
++static const struct bpf_func_proto bpf_get_socket_uid_sock_ctx_proto = {
++	.func = bpf_get_socket_uid_sock_ctx,
++	.gpl_only = false,
++	.ret_type = RET_INTEGER,
++	.arg1_type = ARG_PTR_TO_SOCK_CTX,
++};
++
++static const struct bpf_func_proto *
++cg_sock_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
++{
++	switch (func_id) {
++	case BPF_FUNC_get_socket_cookie:
++		return &bpf_get_socket_cookie_sock_ctx_proto;
++	case BPF_FUNC_get_socket_uid:
++		return &bpf_get_socket_uid_sock_ctx_proto;
++	default:
++		return bpf_base_func_proto(func_id);
++	}
++}
++
++
+ const struct bpf_verifier_ops cg_sock_verifier_ops = {
+-	.get_func_proto		= bpf_base_func_proto,
++	.get_func_proto		= cg_sock_func_proto,
+ 	.is_valid_access	= sock_filter_is_valid_access,
+ 	.convert_ctx_access	= bpf_sock_convert_ctx_access,
+ };
+--- a/kernel/bpf/verifier.c
++++ b/kernel/bpf/verifier.c
+@@ -1099,6 +1099,14 @@
+  * if t==read && value_regno==-1, don't care what we read from memory
+  */
+ /* Borrowed socket pointers are never adjusted or reconstructed from scalars. */
++static bool bpf_sock_ctx_reg_is_unmodified(const struct bpf_reg_state *reg)
++{
++	return reg->type == PTR_TO_CTX && reg->off == 0 &&
++		tnum_is_const(reg->var_off) && reg->var_off.value == 0 &&
++		reg->smin_value == 0 && reg->smax_value == 0 &&
++		reg->umin_value == 0 && reg->umax_value == 0;
++}
++
+ static bool bpf_sock_reg_is_unmodified(const struct bpf_reg_state *reg)
+ {
+ 	return reg->type == PTR_TO_SOCKET && !reg->off &&
+@@ -1440,6 +1448,12 @@
+ 		expected_type = PTR_TO_CTX;
+ 		if (type != expected_type)
+ 			goto err_type;
++	} else if (arg_type == ARG_PTR_TO_SOCK_CTX) {
++		expected_type = PTR_TO_CTX;
++		if (type != expected_type)
++			goto err_type;
++		if (!bpf_sock_ctx_reg_is_unmodified(reg))
++			return -EACCES;
+ 	} else if (arg_type == ARG_PTR_TO_SOCKET) {
+ 		expected_type = PTR_TO_SOCKET;
+ 		if (type != expected_type)
+@@ -3355,6 +3369,9 @@
+ 	 * carrying a socket: its helper/leak restrictions differ.
+ 	 */
+ 	if (rcur->type == PTR_TO_SOCKET && rold->type != PTR_TO_SOCKET)
++		return false;
++	/* A scalar path must not hide a socket context helper argument. */
++	if (rcur->type == PTR_TO_CTX && rold->type != PTR_TO_CTX)
+ 		return false;
+ 	switch (rold->type) {
+ 	case SCALAR_VALUE:
+--- a/net/ipv4/af_inet.c
++++ b/net/ipv4/af_inet.c
+@@ -443,6 +443,9 @@
+ 	if (sk) {
+ 		long timeout;
+ 
++		/* Notify before detaching or closing the live socket. */
++		BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk);
++
+ #ifdef CONFIG_NETFILTER_XT_MATCH_QTAGUID
+ 		qtaguid_untag(sock, true);
+ #endif

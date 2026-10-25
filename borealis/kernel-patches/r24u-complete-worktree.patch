@@ -1,0 +1,2191 @@
+diff --git a/arch/alpha/include/uapi/asm/mman.h b/arch/alpha/include/uapi/asm/mman.h
+index f2f94967..1fbe99e8 100755
+--- a/arch/alpha/include/uapi/asm/mman.h
++++ b/arch/alpha/include/uapi/asm/mman.h
+@@ -62,6 +62,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+diff --git a/arch/mips/include/uapi/asm/mman.h b/arch/mips/include/uapi/asm/mman.h
+index 97c03f46..a5308cd1 100755
+--- a/arch/mips/include/uapi/asm/mman.h
++++ b/arch/mips/include/uapi/asm/mman.h
+@@ -89,6 +89,8 @@
+ #define MADV_DONTDUMP	16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+diff --git a/arch/parisc/include/uapi/asm/mman.h b/arch/parisc/include/uapi/asm/mman.h
+index dd4d1876..d5fe08c2 100755
+--- a/arch/parisc/include/uapi/asm/mman.h
++++ b/arch/parisc/include/uapi/asm/mman.h
+@@ -58,6 +58,8 @@
+ #define MADV_DONTDUMP   69		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	70		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 71	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 72	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+diff --git a/arch/xtensa/include/uapi/asm/mman.h b/arch/xtensa/include/uapi/asm/mman.h
+index 360944e1..5b2fbcc3 100755
+--- a/arch/xtensa/include/uapi/asm/mman.h
++++ b/arch/xtensa/include/uapi/asm/mman.h
+@@ -101,6 +101,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_NODUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+diff --git a/drivers/cpufreq/exynos-acme.c b/drivers/cpufreq/exynos-acme.c
+index d9dce07c..d32cf2d2 100755
+--- a/drivers/cpufreq/exynos-acme.c
++++ b/drivers/cpufreq/exynos-acme.c
+@@ -24,6 +24,28 @@
+ 
+ #include "exynos-acme.h"
+ 
++/* Optional Eureka values override valid standard values independently.
++ * Missing/invalid values retain the existing CAL/device bounds. Never expand
++ * the calibrated range while selecting the initial boot/QoS contract.
++ */
++#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
++static unsigned int exynos_eureka_dt_freq(struct device_node *dn,
++        const char *standard, const char *custom, unsigned int fallback,
++        unsigned int minimum, unsigned int maximum)
++{
++    unsigned int val;
++
++    if (!of_property_read_u32(dn, standard, &val) &&
++        val > 0 && val >= minimum && val <= maximum)
++        fallback = val;
++    if (!of_property_read_u32(dn, custom, &val) &&
++        val > 0 && val >= minimum && val <= maximum)
++        fallback = val;
++    return fallback;
++}
++#endif
++
++
+ /*
+  * list head of cpufreq domain
+  */
+@@ -881,9 +903,9 @@ free_table:
+ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
+ 					struct device_node *dn)
+ {
+-	unsigned int boot_qos, val;
+-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-	unsigned int ekval;
++	unsigned int boot_qos;
++#ifndef CONFIG_EUREKA_CUSTOM_DT_NODES
++	unsigned int val;
+ #endif
+ 
+ 	/*
+@@ -893,14 +915,13 @@ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
+ 	 * between max frequency of domain and the value defined in device tree.
+ 	 */
+ 	boot_qos = domain->max_freq;
+-	if (!of_property_read_u32(dn, "pm_qos-booting", &val)) {
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		if (!of_property_read_u32(dn, "eureka_pm_qos-booting", &ekval))
+-			boot_qos = min(boot_qos, ekval);
++	boot_qos = exynos_eureka_dt_freq(dn, "pm_qos-booting",
++		"eureka_pm_qos-booting", boot_qos, domain->min_freq, domain->max_freq);
+ #else
++	if (!of_property_read_u32(dn, "pm_qos-booting", &val))
+ 		boot_qos = min(boot_qos, val);
+ #endif
+-	}
+ 
+ 	pm_qos_update_request_timeout(&domain->min_qos_req,
+ 			boot_qos, 40 * USEC_PER_SEC);
+@@ -1158,10 +1179,9 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
+ static __init int init_domain(struct exynos_cpufreq_domain *domain,
+ 					struct device_node *dn)
+ {
+-	unsigned int val;
+ 	int ret;
+-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-	unsigned int ekval;
++#ifndef CONFIG_EUREKA_CUSTOM_DT_NODES
++	unsigned int val;
+ #endif
+ 
+ 	mutex_init(&domain->lock);
+@@ -1177,27 +1197,25 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
+ 	 * selected to the value defined in device tree
+ 	 */
+ #ifndef CONFIG_EXYNOS_HOTPLUG_GOVERNOR
+-	if (!of_property_read_u32(dn, "max-freq", &val)) {
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		if (!of_property_read_u32(dn, "eureka_max-freq", &ekval))
+-			domain->max_freq = ekval;
++	domain->max_freq = exynos_eureka_dt_freq(dn, "max-freq", "eureka_max-freq",
++		domain->max_freq, domain->min_freq, domain->max_freq);
+ #else
+-		if (domain->id == 0) {
++	if (!of_property_read_u32(dn, "max-freq", &val)) {
++		if (domain->id == 0)
+ 			domain->max_freq = 1690000;
+-		} else if (domain->id == 1) {
+-	                domain->max_freq = 2080000;
+-		}
+-#endif
++		else if (domain->id == 1)
++			domain->max_freq = 2080000;
+ 	}
+ #endif
+-	if (!of_property_read_u32(dn, "min-freq", &val)) {
++#endif
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		if (!of_property_read_u32(dn, "eureka_min-freq", &ekval))
+-			domain->min_freq = ekval;
++	domain->min_freq = exynos_eureka_dt_freq(dn, "min-freq", "eureka_min-freq",
++		domain->min_freq, domain->min_freq, domain->max_freq);
+ #else
++	if (!of_property_read_u32(dn, "min-freq", &val))
+ 		domain->min_freq = val;
+ #endif
+-	}
+ 
+ 	// Disable 1794000 as it's causing issues.
+ 	if (domain->max_freq == 1794000) {
+@@ -1218,6 +1236,8 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
+ 		domain->boot_freq = domain->max_freq;
+ 		domain->resume_freq = 1560000;
+ 	}
++	domain->boot_freq = clamp(domain->boot_freq, domain->min_freq, domain->max_freq);
++	domain->resume_freq = clamp(domain->resume_freq, domain->min_freq, domain->max_freq);
+ #else
+         if (domain->id == 0)
+         {
+diff --git a/drivers/cpufreq/exynos-ufc.c b/drivers/cpufreq/exynos-ufc.c
+index 7bac94e6..c3d1e6fe 100755
+--- a/drivers/cpufreq/exynos-ufc.c
++++ b/drivers/cpufreq/exynos-ufc.c
+@@ -23,6 +23,28 @@
+ 
+ #include "exynos-acme.h"
+ 
++/* Optional Eureka values override valid standard values independently.
++ * Missing/invalid values retain the existing CAL/device bounds. Never expand
++ * the calibrated range while selecting the initial boot/QoS contract.
++ */
++#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
++static unsigned int exynos_eureka_dt_freq(struct device_node *dn,
++        const char *standard, const char *custom, unsigned int fallback,
++        unsigned int minimum, unsigned int maximum)
++{
++    unsigned int val;
++
++    if (!of_property_read_u32(dn, standard, &val) &&
++        val > 0 && val >= minimum && val <= maximum)
++        fallback = val;
++    if (!of_property_read_u32(dn, custom, &val) &&
++        val > 0 && val >= minimum && val <= maximum)
++        fallback = val;
++    return fallback;
++}
++#endif
++
++
+ struct exynos_ufc_req {
+         int                     last_min_input;
+         int                     last_min_wo_boost_input;
+@@ -558,19 +580,16 @@ static __init void init_sysfs(void)
+ static int parse_ufc_ctrl_info(struct exynos_cpufreq_domain *domain,
+ 					struct device_node *dn)
+ {
+-	unsigned int val;
+-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-	unsigned int ekval;
+-#endif
+-
+-	if (!of_property_read_u32(dn, "user-default-qos", &val)) {
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		if (!of_property_read_u32(dn, "eureka_user-default-qos", &ekval))
+-			domain->user_default_qos = ekval;
++	domain->user_default_qos = exynos_eureka_dt_freq(dn, "user-default-qos",
++		"eureka_user-default-qos", domain->user_default_qos,
++		domain->min_freq, domain->max_freq);
+ #else
++	unsigned int val;
++
++	if (!of_property_read_u32(dn, "user-default-qos", &val))
+ 		domain->user_default_qos = val;
+ #endif
+-	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c b/drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c
+index 317ef431..8446835c 100755
+--- a/drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c
++++ b/drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c
+@@ -2115,24 +2115,26 @@ static ssize_t show_kernel_sysfs_clock(struct kobject *kobj, struct kobj_attribu
+ static ssize_t show_kernel_sysfs_freq_table(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
+ {
+ 	ssize_t ret = 0;
+-	int i = 0;
+-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
++	int i, min_level, max_level;
++	struct exynos_context *platform;
+ 
+-	if (!platform)
++	if (!pkbdev || !pkbdev->platform_context)
++		return -ENODEV;
++	platform = (struct exynos_context *)pkbdev->platform_context;
++	if (!platform->table || platform->table_size <= 0)
+ 		return -ENODEV;
+ 
+-	for (i = gpu_dvfs_get_level(platform->gpu_min_clock); i >= gpu_dvfs_get_level(platform->gpu_max_clock); i--) {
+-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "%d ", platform->table[i].clock);
+-	}
+-
+-	if (ret < PAGE_SIZE - 1) {
+-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
+-	} else {
+-		buf[PAGE_SIZE-2] = '\n';
+-		buf[PAGE_SIZE-1] = '\0';
+-		ret = PAGE_SIZE-1;
+-	}
++	min_level = gpu_dvfs_get_level(platform->gpu_min_clock);
++	max_level = gpu_dvfs_get_level(platform->gpu_max_clock);
++	/* A failed lookup is not a table index or an available frequency. */
++	if (min_level < 0 || max_level < 0 ||
++	    min_level >= platform->table_size || max_level >= platform->table_size ||
++	    min_level < max_level)
++		return -EINVAL;
+ 
++	for (i = min_level; i >= max_level && ret < PAGE_SIZE - 2; i--)
++		ret += scnprintf(buf + ret, PAGE_SIZE - ret - 1, "%d ", platform->table[i].clock);
++	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "\n");
+ 	return ret;
+ }
+ 
+diff --git a/drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c b/drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c
+index e6efac40..4c62eb6b 100755
+--- a/drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c
++++ b/drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c
+@@ -225,6 +225,13 @@ void gpu_update_config_data_int_array(struct device_node *np, const char *of_str
+ 		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "\n");
+ 	}
+ }
++/* Missing optional Eureka nodes retain the standard device contract. */
++#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
++static int gpu_valid_custom_clock(int standard, int custom)
++{
++	return custom > 0 ? custom : standard;
++}
++#endif
+ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
+ {
+ #ifdef CONFIG_MALI_DVFS
+@@ -257,8 +264,9 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
+ 		platform->interactive.highspeed_load  = of_data_int_array[1] == 0 ? 100 : (u32) of_data_int_array[1];
+ 		platform->interactive.highspeed_delay = of_data_int_array[2] == 0 ? 0 : (u32) of_data_int_array[2];
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		platform->interactive.highspeed_clock = platform->interactive.eureka_gpu_highspeed_clock;
+-		platform->interactive.highspeed_load = platform->interactive.eureka_gpu_highspeed_load;
++		platform->interactive.highspeed_clock = gpu_valid_custom_clock(platform->interactive.highspeed_clock, platform->interactive.eureka_gpu_highspeed_clock);
++		if (platform->interactive.eureka_gpu_highspeed_load > 0 && platform->interactive.eureka_gpu_highspeed_load <= 100)
++			platform->interactive.highspeed_load = platform->interactive.eureka_gpu_highspeed_load;
+ #else
+ 		platform->interactive.highspeed_clock = 1001000;
+ 		platform->interactive.highspeed_load = 75;
+@@ -286,23 +294,17 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
+ 	gpu_update_config_data_int(np, "gpu_pmqos_cpu_cluster_num", &platform->gpu_pmqos_cpu_cluster_num);
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+ 	gpu_update_config_data_int(np, "eureka_gpu_max_clock", &platform->eureka_gpu_max_clock);
+-	gpu_update_config_data_int_array(np, "eureka_gpu_temp_throttling", of_data_int_array, 6);
+-	platform->eureka_gpu_temp_throttling_0 = of_data_int_array[0];
+-	platform->eureka_gpu_temp_throttling_1 = of_data_int_array[1];
+-	platform->eureka_gpu_temp_throttling_2 = of_data_int_array[2];
+-	platform->eureka_gpu_temp_throttling_3 = of_data_int_array[3];
+-	platform->eureka_gpu_temp_throttling_4 = of_data_int_array[4];
+-	platform->eureka_gpu_temp_throttling_5 = of_data_int_array[5];
++
+ #endif
+ 	gpu_update_config_data_int(np, "gpu_max_clock", &platform->gpu_max_clock);
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-	platform->gpu_max_clock = platform->eureka_gpu_max_clock;
++	platform->gpu_max_clock = gpu_valid_custom_clock(platform->gpu_max_clock, platform->eureka_gpu_max_clock);
+ #else
+ 	platform->gpu_max_clock = 1300000;
+ #endif
+ 	gpu_update_config_data_int(np, "gpu_max_clock_limit", &platform->gpu_max_clock_limit);
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-	platform->gpu_max_clock_limit = platform->eureka_gpu_max_clock;
++	platform->gpu_max_clock_limit = gpu_valid_custom_clock(platform->gpu_max_clock_limit, platform->eureka_gpu_max_clock);
+ #else
+ 	platform->gpu_max_clock_limit = 1300000;
+ #endif
+@@ -317,12 +319,15 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
+ 	if (of_data_int == TMU_LOCK_CLK_END) {
+ 		gpu_update_config_data_int_array(np, "gpu_temp_throttling", platform->tmu_lock_clk, TMU_LOCK_CLK_END);
+ #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+-		platform->tmu_lock_clk[0] = platform->eureka_gpu_temp_throttling_0;
+-		platform->tmu_lock_clk[1] = platform->eureka_gpu_temp_throttling_1;
+-		platform->tmu_lock_clk[2] = platform->eureka_gpu_temp_throttling_2;
+-		platform->tmu_lock_clk[3] = platform->eureka_gpu_temp_throttling_3;
+-		platform->tmu_lock_clk[4] = platform->eureka_gpu_temp_throttling_4;
+-		platform->tmu_lock_clk[5] = platform->eureka_gpu_temp_throttling_5;
++		if (!of_property_read_u32_array(np, "eureka_gpu_temp_throttling",
++				of_data_int_array, TMU_LOCK_CLK_END)) {
++			for (i = 0; i < TMU_LOCK_CLK_END; i++)
++				if (of_data_int_array[i] <= 0)
++					break;
++			if (i == TMU_LOCK_CLK_END)
++				for (i = 0; i < TMU_LOCK_CLK_END; i++)
++					platform->tmu_lock_clk[i] = of_data_int_array[i];
++		}
+ #else
+ 		platform->tmu_lock_clk[0] = 676000;
+ 		platform->tmu_lock_clk[1] = 545000;
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index b742cba4..6f0a82e1 100755
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -392,7 +392,9 @@ static void input_handle_event(struct input_dev *dev,
+ 
+ 	disposition = input_get_disposition(dev, type, code, &value);
+ 
++#ifdef CONFIG_KSU
+ 	ksu_handle_input_handle_event(&type, &code, &value);
++#endif
+ 
+ 	if ((disposition & INPUT_PASS_TO_DEVICE) && dev->event)
+ 		dev->event(dev, type, code, value);
+diff --git a/drivers/trace/exynos-ss.c b/drivers/trace/exynos-ss.c
+index 778361cf..65bbae47 100755
+--- a/drivers/trace/exynos-ss.c
++++ b/drivers/trace/exynos-ss.c
+@@ -575,6 +575,11 @@ static struct exynos_ss_item ess_items[] = {
+ /* - SMALL_DEBUG_MODE */
+ #else /* [ORIGINAL MINIMIZED MODE] MINIMIZED MODE && ! SMALL_DEBUG_MODE */
+ 	{"log_kevents",	{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
++#if defined(CONFIG_MACH_EXYNOS7885_A30_OPEN) && !defined(CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER)
++	/* Keep log_kernel at +8 MiB, matching the A30 recovery. Padding is
++	 * reserved and persistent; it is never used as an event/log buffer. */
++	{"log_a30_gap_events", {SZ_2M * 3, 0, 0, true, true, true}, NULL, NULL, 0},
++#endif
+ 	{"log_kernel",	{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
+ #ifdef CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER
+ 	{"log_platform",{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
+@@ -584,6 +589,11 @@ static struct exynos_ss_item ess_items[] = {
+ #endif /* end of MINIMIZED MODE */
+ 
+ #ifdef CONFIG_EXYNOS_SNAPSHOT_PSTORE
++#if defined(CONFIG_MACH_EXYNOS7885_A30_OPEN) && defined(CONFIG_EXYNOS_SNAPSHOT_MINIMIZED_MODE) && !defined(CONFIG_SEC_DEBUG_SMALL_DEBUG_MODE) && !defined(CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER)
++	/* Preserve the recovery pstore offset (+18 MiB) without enabling the
++	 * expensive full event, platform or SFR logging profiles. */
++	{"log_a30_gap_pstore", {SZ_8M, 0, 0, true, true, true}, NULL, NULL, 0},
++#endif
+ 	{"log_pstore",	{SZ_32K,	0, 0, true, true, true}, NULL ,NULL, 0},
+ #endif
+ 
+diff --git a/fs/exec.c b/fs/exec.c
+index 9558ef74..4015c92a 100755
+--- a/fs/exec.c
++++ b/fs/exec.c
+@@ -1842,7 +1842,9 @@ static int do_execveat_common(int fd, struct filename *filename,
+ 	struct files_struct *displaced;
+ 	int retval;
+ 
++#ifdef CONFIG_KSU
+ 	ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++#endif
+ 
+ 	if (IS_ERR(filename))
+ 		return PTR_ERR(filename);
+diff --git a/fs/open.c b/fs/open.c
+index a0543b96..6b388686 100755
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -360,7 +360,9 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
+ 	int res;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW;
+ 
++#ifdef CONFIG_KSU
+ 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
++#endif
+ 
+ 	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
+ 		return -EINVAL;
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 9445fb46..451243d3 100755
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -814,6 +814,7 @@ static void show_smap_vma_flags(struct seq_file *m, struct vm_area_struct *vma)
+ 		[ilog2(VM_NORESERVE)]	= "nr",
+ 		[ilog2(VM_HUGETLB)]	= "ht",
+ 		[ilog2(VM_ARCH_1)]	= "ar",
++		[ilog2(VM_WIPEONFORK)]	= "wf",
+ 		[ilog2(VM_DONTDUMP)]	= "dd",
+ #ifdef CONFIG_MEM_SOFT_DIRTY
+ 		[ilog2(VM_SOFTDIRTY)]	= "sd",
+diff --git a/fs/read_write.c b/fs/read_write.c
+index f8ae5e1b..9c4e9cb3 100755
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -451,7 +451,9 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
+ {
+ 	ssize_t ret;
+ 
++#ifdef CONFIG_KSU
+ 	ksu_handle_vfs_read(&file, &buf, &count, &pos);
++#endif
+ 
+ 	if (!(file->f_mode & FMODE_READ))
+ 		return -EBADF;
+diff --git a/fs/stat.c b/fs/stat.c
+index aef47035..74829e56 100755
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -96,7 +96,9 @@ int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+ 	int error = -EINVAL;
+ 	unsigned int lookup_flags = 0;
+ 
++#ifdef CONFIG_KSU
+ 	ksu_handle_stat(&dfd, &filename, &flag);
++#endif
+ 
+ 	if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+ 		      AT_EMPTY_PATH)) != 0)
+diff --git a/include/linux/bpf-cgroup.h b/include/linux/bpf-cgroup.h
+index d4fcbf1e..47f93ede 100644
+--- a/include/linux/bpf-cgroup.h
++++ b/include/linux/bpf-cgroup.h
+@@ -60,6 +60,8 @@ int __cgroup_bpf_run_filter_skb(struct sock *sk,
+ 				struct sk_buff *skb,
+ 				enum bpf_attach_type type);
+ 
++void __cgroup_bpf_run_sock_release(struct sock *sk);
++
+ int __cgroup_bpf_run_filter_sk(struct sock *sk,
+ 			    enum bpf_attach_type type);
+ 
+@@ -107,6 +109,13 @@ int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
+ 	__ret;								       \
+ })
+ 
++#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) \
++do { \
++	typeof(sk) __sk = (sk); \
++	if (cgroup_bpf_enabled && __sk) \
++		__cgroup_bpf_run_sock_release(__sk); \
++} while (0)
++
+ #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk)				       \
+ 	BPF_CGROUP_RUN_SK_PROG(sk, BPF_CGROUP_INET_SOCK_CREATE)
+ 
+@@ -193,6 +202,20 @@ int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
+ 									      \
+ 	__ret;								      \
+ })
++
++int __cgroup_bpf_run_filter_setsockopt(struct sock *sk, int *level,
++        int *optname, char __user *optval, int *optlen, char **kernel_optval);
++int __cgroup_bpf_run_filter_getsockopt(struct sock *sk, int level,
++        int optname, char __user *optval, int __user *optlen,
++        int max_optlen, int retval);
++
++#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) \
++    __cgroup_bpf_run_filter_setsockopt(sk, level, name, value, length, kvalue)
++#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) \
++    __cgroup_bpf_run_filter_getsockopt(sk, level, name, value, length, maxlen, ret)
++#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) \
++({ int __length = 0; if (cgroup_bpf_enabled) get_user(__length, length); __length; })
++
+ #else
+ 
+ struct cgroup_bpf {};
+@@ -203,6 +226,7 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
+ #define BPF_CGROUP_PRE_CONNECT_ENABLED(sk) (0)
+ #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
++#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) do { } while (0)
+ #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr) ({ 0; })
+@@ -219,6 +243,11 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
+ #define BPF_CGROUP_RUN_PROG_SOCK_OPS(sock_ops) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type,major,minor,access) ({ 0; })
+ 
++
++#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) (0)
++#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) (ret)
++#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) (0)
++
+ #endif /* CONFIG_CGROUP_BPF */
+ 
+ #endif /* _BPF_CGROUP_H */
+diff --git a/include/linux/bpf.h b/include/linux/bpf.h
+index ec810024..715057ca 100755
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -20,6 +20,7 @@
+ struct perf_event;
+ struct bpf_prog;
+ struct bpf_map;
++struct vm_area_struct;
+ 
+ /* map is generic key/value storage optionally accesible by eBPF programs */
+ struct bpf_map_ops {
+@@ -27,8 +28,15 @@ struct bpf_map_ops {
+ 	struct bpf_map *(*map_alloc)(union bpf_attr *attr);
+ 	void (*map_release)(struct bpf_map *map, struct file *map_file);
+ 	void (*map_free)(struct bpf_map *map);
++	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+ 	int (*map_get_next_key)(struct bpf_map *map, void *key, void *next_key);
+ 
++
++    int (*map_lookup_batch)(struct bpf_map *map, const union bpf_attr *attr,
++                           union bpf_attr __user *uattr);
++    int (*map_lookup_and_delete_batch)(struct bpf_map *map, const union bpf_attr *attr,
++                                      union bpf_attr __user *uattr);
++
+ 	/* funcs callable from userspace and from eBPF programs */
+ 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
+ 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
+@@ -41,6 +49,10 @@ struct bpf_map_ops {
+ 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
+ };
+ 
++
++int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++                          union bpf_attr __user *uattr);
++
+ struct bpf_map {
+ 	atomic_t refcnt;
+ 	enum bpf_map_type map_type;
+@@ -87,7 +99,9 @@ enum bpf_arg_type {
+ 	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
+ 
+ 	ARG_PTR_TO_CTX,		/* pointer to context */
++	ARG_PTR_TO_SOCKET,	/* unmodified borrowed socket */
+ 	ARG_ANYTHING,		/* any (initialized) argument is ok */
++	ARG_PTR_TO_SOCK_CTX,	/* unmodified CGROUP_SOCK context */
+ };
+ 
+ /* type of values returned from helper functions */
+@@ -144,6 +158,7 @@ enum bpf_reg_type {
+ 	PTR_TO_STACK,		 /* reg == frame_pointer + offset */
+ 	PTR_TO_PACKET,		 /* reg points to skb->data */
+ 	PTR_TO_PACKET_END,	 /* skb->data + headlen */
++	PTR_TO_SOCKET,		 /* borrowed live socket from a holding context */
+ };
+ 
+ /* The information passed from prog-specific *_is_valid_access
+@@ -285,6 +300,7 @@ struct bpf_prog_array {
+ struct bpf_prog_array *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags);
+ void bpf_prog_array_free(struct bpf_prog_array __rcu *progs);
+ int bpf_prog_array_length(struct bpf_prog_array __rcu *progs);
++bool bpf_prog_array_is_empty(struct bpf_prog_array *progs);
+ int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *progs,
+ 				__u32 __user *prog_ids, u32 cnt);
+ 				
+@@ -355,6 +371,7 @@ void bpf_map_put_with_uref(struct bpf_map *map);
+ void bpf_map_put(struct bpf_map *map);
+ int bpf_map_precharge_memlock(u32 pages);
+ void *bpf_map_area_alloc(size_t size, int numa_node);
++void *bpf_map_area_mmapable_alloc(size_t size, int numa_node);
+ void bpf_map_area_free(void *base);
+ 
+ extern int sysctl_unprivileged_bpf_disabled;
+@@ -540,6 +557,28 @@ static inline int sock_map_prog(struct bpf_map *map,
+ #endif
+ 
+ /* verifier prototypes for helper functions called from eBPF programs */
++
++#ifdef CONFIG_NET
++bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
++                             struct bpf_insn_access_aux *info);
++u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
++        const struct bpf_insn *si, struct bpf_insn *buffer,
++        struct bpf_prog *prog, u32 *target_size);
++#else
++static inline bool bpf_sock_is_valid_access(int off, int size,
++        enum bpf_access_type type, struct bpf_insn_access_aux *info)
++{
++    return false;
++}
++static inline u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
++        const struct bpf_insn *si, struct bpf_insn *buffer,
++        struct bpf_prog *prog, u32 *target_size)
++{
++    return 0;
++}
++#endif
++extern const struct bpf_func_proto bpf_get_socket_cookie_sock_proto;
++
+ extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
+ extern const struct bpf_func_proto bpf_map_update_elem_proto;
+ extern const struct bpf_func_proto bpf_map_delete_elem_proto;
+diff --git a/include/linux/bpf_types.h b/include/linux/bpf_types.h
+index a42a04be..46503204 100644
+--- a/include/linux/bpf_types.h
++++ b/include/linux/bpf_types.h
+@@ -8,6 +8,9 @@ BPF_PROG_TYPE(BPF_PROG_TYPE_XDP, xdp)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SKB, cg_skb)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK, cg_sock)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK_ADDR, cg_sock_addr)
++#ifdef CONFIG_CGROUP_BPF
++BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCKOPT, cg_sockopt)
++#endif
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_IN, lwt_inout)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_OUT, lwt_inout)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_XMIT, lwt_xmit)
+diff --git a/include/linux/filter.h b/include/linux/filter.h
+index 88fd5df7..8f36c13c 100755
+--- a/include/linux/filter.h
++++ b/include/linux/filter.h
+@@ -1033,4 +1033,15 @@ struct bpf_sock_ops_kern {
+ 	};
+ };
+ 
++
++struct bpf_sockopt_kern {
++    struct sock *sk;
++    u8 *optval;
++    u8 *optval_end;
++    s32 level;
++    s32 optname;
++    s32 optlen;
++    s32 retval;
++};
++
+ #endif /* __LINUX_FILTER_H__ */
+diff --git a/include/linux/mm.h b/include/linux/mm.h
+index 0e771e17..5dfc5fba 100755
+--- a/include/linux/mm.h
++++ b/include/linux/mm.h
+@@ -183,6 +183,7 @@ extern unsigned int kobjsize(const void *objp);
+ #define VM_ACCOUNT	0x00100000	/* Is a VM accounted object */
+ #define VM_NORESERVE	0x00200000	/* should the VM suppress accounting */
+ #define VM_HUGETLB	0x00400000	/* Huge TLB Page VM */
++#define VM_WIPEONFORK	0x00800000	/* Zero this VMA in fork children. */
+ #define VM_ARCH_1	0x01000000	/* Architecture-specific flag */
+ #define VM_ARCH_2	0x02000000
+ #define VM_DONTDUMP	0x04000000	/* Do not include in the core dump */
+diff --git a/include/uapi/asm-generic/mman-common.h b/include/uapi/asm-generic/mman-common.h
+index a74dd84b..3d7942dd 100755
+--- a/include/uapi/asm-generic/mman-common.h
++++ b/include/uapi/asm-generic/mman-common.h
+@@ -56,6 +56,8 @@
+ #define MADV_DONTDUMP   16		/* Explicity exclude from the core dump,
+ 					   overrides the coredump filter bits */
+ #define MADV_DODUMP	17		/* Clear the MADV_DONTDUMP flag */
++#define MADV_WIPEONFORK 18	/* Zero memory on fork, child only */
++#define MADV_KEEPONFORK 19	/* Undo MADV_WIPEONFORK */
+ 
+ /* compatibility flags */
+ #define MAP_FILE	0
+diff --git a/include/uapi/linux/bpf.h b/include/uapi/linux/bpf.h
+index 2cecfcb5..9ffe9667 100755
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -89,6 +89,8 @@ enum bpf_cmd {
+ 	BPF_OBJ_GET_INFO_BY_FD,
+ 	BPF_PROG_QUERY,
+ 	BPF_BTF_LOAD = 18,
++	BPF_MAP_LOOKUP_BATCH = 24,
++	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
+ };
+ 
+ enum bpf_map_type {
+@@ -128,6 +130,7 @@ enum bpf_prog_type {
+ 	BPF_PROG_TYPE_SK_SKB,
+ 	BPF_PROG_TYPE_CGROUP_DEVICE,
+ 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
++	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
+ };
+ 
+ enum bpf_attach_type {
+@@ -148,6 +151,9 @@ enum bpf_attach_type {
+ 	BPF_CGROUP_UDP6_SENDMSG,
+ 	BPF_CGROUP_UDP4_RECVMSG = 19,
+ 	BPF_CGROUP_UDP6_RECVMSG,
++	BPF_CGROUP_GETSOCKOPT = 21,
++	BPF_CGROUP_SETSOCKOPT,
++	BPF_CGROUP_INET_SOCK_RELEASE = 23,
+ 	__MAX_BPF_ATTACH_TYPE
+ };
+ 
+@@ -230,7 +236,23 @@ enum bpf_attach_type {
+ #define BPF_F_RDONLY		(1U << 3)
+ #define BPF_F_WRONLY		(1U << 4)
+ 
++/* Array values may be shared through mmap. */
++#define BPF_F_MMAPABLE		(1U << 10)
++
+ union bpf_attr {
++
++    struct { /* Standard batch lookup ABI; pointers aligned on ARM32 too. */
++        __aligned_u64 in_batch;
++        __aligned_u64 out_batch;
++        __aligned_u64 keys;
++        __aligned_u64 values;
++        __u32 count;
++        __u32 map_fd;
++        __u64 elem_flags;
++        __u64 flags;
++    } batch;
++
++
+ 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
+ 		__u32	map_type;	/* one of enum bpf_map_type */
+ 		__u32	key_size;	/* size of key in bytes */
+@@ -941,6 +963,11 @@ struct bpf_sock {
+ 	__u32 src_port;		/* Allows 4-byte read.
+ 				 * Stored in host byte order
+ 				 */
++    __u32 dst_port; /* Network byte order in the lower 16 bits. */
++    __u32 dst_ip4;
++    __u32 dst_ip6[4];
++    __u32 state;
++    __s32 rx_queue_mapping; /* -1 means unavailable. */
+ };
+ 
+ #define XDP_PACKET_HEADROOM 256
+@@ -1066,4 +1093,19 @@ struct bpf_cgroup_dev_ctx {
+ 	__u32 minor;
+ };
+ 
++
++/* Socket-option context uses the standard 64-bit-aligned BPF pointer ABI. */
++#define __bpf_md_ptr(type, name) \
++union { type name; __u64 :64; } __attribute__((aligned(8)))
++
++struct bpf_sockopt {
++    __bpf_md_ptr(struct bpf_sock *, sk);
++    __bpf_md_ptr(void *, optval);
++    __bpf_md_ptr(void *, optval_end);
++    __s32 level;
++    __s32 optname;
++    __s32 optlen;
++    __s32 retval;
++};
++
+ #endif /* _UAPI__LINUX_BPF_H__ */
+diff --git a/kernel/bpf/Makefile b/kernel/bpf/Makefile
+index dc71ef0e..6a41a64f 100755
+--- a/kernel/bpf/Makefile
++++ b/kernel/bpf/Makefile
+@@ -15,6 +15,9 @@ ifeq ($(CONFIG_PERF_EVENTS),y)
+ obj-$(CONFIG_BPF_SYSCALL) += stackmap.o
+ endif
+ obj-$(CONFIG_CGROUP_BPF) += cgroup.o
++ifeq ($(CONFIG_NET),y)
++obj-$(CONFIG_CGROUP_BPF) += sockopt.o
++endif
+ 
+ # various version of gcc have a LTO bug where the &&labels used in the
+ # BPF interpreter can cause linker errors when spread incorrectly over
+diff --git a/kernel/bpf/arraymap.c b/kernel/bpf/arraymap.c
+index 26808217..99eef257 100755
+--- a/kernel/bpf/arraymap.c
++++ b/kernel/bpf/arraymap.c
+@@ -14,13 +14,14 @@
+ #include <linux/err.h>
+ #include <linux/slab.h>
+ #include <linux/mm.h>
++#include <linux/vmalloc.h>
+ #include <linux/filter.h>
+ #include <linux/perf_event.h>
+ 
+ #include "map_in_map.h"
+ 
+ #define ARRAY_CREATE_FLAG_MASK \
+-	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY)
++	(BPF_F_NUMA_NODE | BPF_F_RDONLY | BPF_F_WRONLY | BPF_F_MMAPABLE)
+ 
+ static void bpf_array_free_percpu(struct bpf_array *array)
+ {
+@@ -51,6 +52,43 @@ static int bpf_array_alloc_percpu(struct bpf_array *array)
+ 	return 0;
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Array mmap layout adapted from Linux v5.10 to the R24U allocator.
++ * Metadata stays in preceding pages and must never be mapped to userspace.
++ */
++static void *array_map_vmalloc_addr(struct bpf_array *array)
++{
++	return (char *)array - PAGE_ALIGN(sizeof(*array)) +
++		offsetof(struct bpf_array, value);
++}
++
++static int array_map_mmap(struct bpf_map *map, struct vm_area_struct *vma)
++{
++	struct bpf_array *array = container_of(map, struct bpf_array, map);
++	u64 value_bytes = PAGE_ALIGN((u64)map->max_entries * array->elem_size);
++	u64 offset;
++	unsigned long length;
++	pgoff_t header_pages = PAGE_ALIGN(sizeof(*array)) >> PAGE_SHIFT;
++
++	if (map->map_type != BPF_MAP_TYPE_ARRAY ||
++	    !(map->map_flags & BPF_F_MMAPABLE) ||
++	    vma->vm_end <= vma->vm_start)
++		return -EINVAL;
++	length = vma->vm_end - vma->vm_start;
++	if ((vma->vm_start & (PAGE_SIZE - 1)) || (length & (PAGE_SIZE - 1)))
++		return -EINVAL;
++	/* Bound pgoff before shifting: addition/multiplication must not wrap. */
++	if (vma->vm_pgoff > (value_bytes >> PAGE_SHIFT))
++		return -EINVAL;
++	offset = (u64)vma->vm_pgoff << PAGE_SHIFT;
++	if (length > value_bytes - offset)
++		return -EINVAL;
++
++	return remap_vmalloc_range(vma, array_map_vmalloc_addr(array),
++				   vma->vm_pgoff + header_pages);
++}
++
++
+ /* Called from syscall */
+ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
+ {
+@@ -68,6 +106,11 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
+ 	    (percpu && numa_node != NUMA_NO_NODE))
+ 		return ERR_PTR(-EINVAL);
+ 
++	/* FD/per-CPU arrays must never expose pointers through mmap. */
++	if (attr->map_type != BPF_MAP_TYPE_ARRAY &&
++	    (attr->map_flags & BPF_F_MMAPABLE))
++		return ERR_PTR(-EINVAL);
++
+ 	if (attr->value_size >= 1 << (KMALLOC_SHIFT_MAX - 1))
+ 		/* if value_size is bigger, the user space won't be able to
+ 		 * access the elements.
+@@ -100,6 +143,9 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
+ 	array_size = sizeof(*array);
+ 	if (percpu)
+ 		array_size += (u64) max_entries * sizeof(void *);
++	else if (attr->map_flags & BPF_F_MMAPABLE)
++		array_size = PAGE_ALIGN(array_size) +
++			PAGE_ALIGN((u64)max_entries * elem_size);
+ 	else
+ 		array_size += (u64) max_entries * elem_size;
+ 
+@@ -119,7 +165,15 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
+ 		return ERR_PTR(ret);
+ 
+ 	/* allocate all map elements and zero-initialize them */
+-	array = bpf_map_area_alloc(array_size, numa_node);
++	if (attr->map_flags & BPF_F_MMAPABLE) {
++		void *data = bpf_map_area_mmapable_alloc(array_size, numa_node);
++		if (!data)
++			return ERR_PTR(-ENOMEM);
++		array = (struct bpf_array *)((char *)data + PAGE_ALIGN(sizeof(*array)) -
++			offsetof(struct bpf_array, value));
++	} else {
++		array = bpf_map_area_alloc(array_size, numa_node);
++	}
+ 	if (!array)
+ 		return ERR_PTR(-ENOMEM);
+ 	array->index_mask = index_mask;
+@@ -329,10 +383,15 @@ static void array_map_free(struct bpf_map *map)
+ 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
+ 		bpf_array_free_percpu(array);
+ 
+-	bpf_map_area_free(array);
++	if (map->map_flags & BPF_F_MMAPABLE)
++		vfree(array_map_vmalloc_addr(array));
++	else
++		bpf_map_area_free(array);
+ }
+ 
+ const struct bpf_map_ops array_map_ops = {
++	.map_mmap = array_map_mmap,
++	.map_lookup_batch = bpf_array_lookup_batch,
+ 	.map_alloc = array_map_alloc,
+ 	.map_free = array_map_free,
+ 	.map_get_next_key = array_map_get_next_key,
+@@ -343,6 +402,7 @@ const struct bpf_map_ops array_map_ops = {
+ };
+ 
+ const struct bpf_map_ops percpu_array_map_ops = {
++	.map_lookup_batch = bpf_array_lookup_batch,
+ 	.map_alloc = array_map_alloc,
+ 	.map_free = array_map_free,
+ 	.map_get_next_key = array_map_get_next_key,
+diff --git a/kernel/bpf/cgroup.c b/kernel/bpf/cgroup.c
+index 1f6d1aaa..c2872570 100644
+--- a/kernel/bpf/cgroup.c
++++ b/kernel/bpf/cgroup.c
+@@ -504,6 +504,20 @@ int __cgroup_bpf_run_filter_sk(struct sock *sk,
+ }
+ EXPORT_SYMBOL(__cgroup_bpf_run_filter_sk);
+ 
++/* Release is a notification: every effective program runs, and its return
++ * value cannot deny closing the socket. The caller still owns the live sock.
++ * R24U's array runner holds RCU across the complete program sequence.
++ */
++void __cgroup_bpf_run_sock_release(struct sock *sk)
++{
++	struct cgroup *cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
++
++	(void)BPF_PROG_RUN_ARRAY_CHECK(
++		cgrp->bpf.effective[BPF_CGROUP_INET_SOCK_RELEASE], sk, BPF_PROG_RUN);
++}
++EXPORT_SYMBOL(__cgroup_bpf_run_sock_release);
++
++
+ /**
+  * __cgroup_bpf_run_filter_sock_addr() - Run a program on a sock and
+  *                                       provided by user sockaddr
+diff --git a/kernel/bpf/core.c b/kernel/bpf/core.c
+index e0e41db3..a7d9886b 100755
+--- a/kernel/bpf/core.c
++++ b/kernel/bpf/core.c
+@@ -1423,6 +1423,20 @@ void bpf_prog_array_free(struct bpf_prog_array __rcu *progs)
+ 	kfree_rcu(progs, rcu);
+ }
+ 
++
++bool bpf_prog_array_is_empty(struct bpf_prog_array *progs)
++{
++    struct bpf_prog **entry;
++    struct bpf_prog *prog;
++
++    if (!progs)
++        return true;
++    for (entry = progs->progs; (prog = READ_ONCE(*entry)); entry++)
++        if (prog != &dummy_bpf_prog.prog)
++            return false;
++    return true;
++}
++
+ void bpf_prog_array_delete_safe(struct bpf_prog_array __rcu *progs,
+ 				struct bpf_prog *old_prog)
+ {
+diff --git a/kernel/bpf/hashtab.c b/kernel/bpf/hashtab.c
+index 824c930b..8ad7e977 100755
+--- a/kernel/bpf/hashtab.c
++++ b/kernel/bpf/hashtab.c
+@@ -1118,7 +1118,167 @@ static void htab_map_free(struct bpf_map *map)
+ 	kfree(htab);
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Bounded hash-map batch lookup for R24U, derived from Linux commit
++ * 057996380a42 (Brian Vazquez and the Linux BPF contributors).
++ * LRU frees follow the R24U lock ordering: release the bucket lock first.
++ * Map-value BPF spin locks are not implemented here; nonzero flags fail.
++ */
++static int htab_map_batch(struct bpf_map *map, const union bpf_attr *attr,
++			  union bpf_attr __user *uattr, bool do_delete)
++{
++	struct bpf_htab *htab = container_of(map, struct bpf_htab, map);
++	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
++	void __user *uvalues = u64_to_user_ptr(attr->batch.values);
++	void __user *ubatch = u64_to_user_ptr(attr->batch.in_batch);
++	void *keys = NULL, *values = NULL;
++	struct htab_elem **deleted = NULL, *element;
++	struct hlist_nulls_node *node, *next;
++	size_t value_size, cpu_stride;
++	u32 bucket = 0, total = 0, capacity = 5, entries, freed, i;
++	u32 max_count = attr->batch.count, key_size = map->key_size;
++	bool percpu = htab_is_percpu(htab), lru = htab_is_lru(htab);
++	unsigned long irq_flags;
++	int ret = 0;
++
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	if (!max_count)
++		return 0;
++	if (put_user(0, &uattr->batch.count))
++		return -EFAULT;
++	if (ubatch && copy_from_user(&bucket, ubatch, sizeof(bucket)))
++		return -EFAULT;
++	if (bucket >= htab->n_buckets)
++		return -ENOENT;
++	cpu_stride = round_up((size_t)map->value_size, 8);
++	if (percpu && cpu_stride > SIZE_MAX / num_possible_cpus())
++		return -E2BIG;
++	value_size = percpu ? cpu_stride * num_possible_cpus() : map->value_size;
++	if (!key_size || !value_size || max_count > SIZE_MAX / key_size ||
++	    max_count > SIZE_MAX / value_size)
++		return -E2BIG;
++
++allocate:
++	keys = kmalloc_array(capacity, key_size, GFP_USER | __GFP_NOWARN);
++	values = kmalloc_array(capacity, value_size, GFP_USER | __GFP_NOWARN);
++	if (do_delete && lru)
++		deleted = kmalloc_array(capacity, sizeof(*deleted), GFP_USER | __GFP_NOWARN);
++	if (!keys || !values || (do_delete && lru && !deleted)) {
++		ret = -ENOMEM;
++		goto finish;
++	}
++again:
++	preempt_disable();
++	this_cpu_inc(bpf_prog_active);
++	rcu_read_lock();
++	raw_spin_lock_irqsave(&htab->buckets[bucket].lock, irq_flags);
++	entries = 0;
++	hlist_nulls_for_each_entry_rcu(element, node,
++			&htab->buckets[bucket].head, hash_node)
++		entries++;
++	if (entries > max_count - total) {
++		ret = total ? 0 : -ENOSPC;
++		goto unlock_finish;
++	}
++	if (entries > capacity) {
++		capacity = entries;
++		raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++		rcu_read_unlock();
++		this_cpu_dec(bpf_prog_active);
++		preempt_enable();
++		kfree(keys);
++		kfree(values);
++		kfree(deleted);
++		deleted = NULL;
++		goto allocate;
++	}
++	i = 0;
++	freed = 0;
++	/* Save the next node before free_htab_elem reuses the element storage. */
++	node = rcu_dereference_raw(htab->buckets[bucket].head.first);
++	while (!is_a_nulls(node)) {
++		element = hlist_nulls_entry(node, struct htab_elem, hash_node);
++		next = rcu_dereference_raw(node->next);
++		memcpy(keys + (size_t)i * key_size, element->key, key_size);
++		if (percpu) {
++			void __percpu *ptr = htab_elem_get_ptr(element, key_size);
++			size_t offset = 0;
++			int cpu;
++			for_each_possible_cpu(cpu) {
++				bpf_long_memcpy(values + (size_t)i * value_size + offset,
++						per_cpu_ptr(ptr, cpu), cpu_stride);
++				offset += cpu_stride;
++			}
++		} else {
++			memcpy(values + (size_t)i * value_size,
++			       element->key + round_up(key_size, 8), value_size);
++		}
++		if (do_delete) {
++			hlist_nulls_del_rcu(&element->hash_node);
++			if (lru)
++				deleted[freed++] = element;
++			else
++				free_htab_elem(htab, element);
++		}
++		i++;
++		node = next;
++	}
++	raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++	for (i = 0; i < freed; i++)
++		bpf_lru_push_free(&htab->lru, &deleted[i]->lru_node);
++	rcu_read_unlock();
++	this_cpu_dec(bpf_prog_active);
++	preempt_enable();
++	if (entries && (copy_to_user(ukeys + (size_t)total * key_size, keys,
++				    (size_t)entries * key_size) ||
++			copy_to_user(uvalues + (size_t)total * value_size, values,
++				     (size_t)entries * value_size))) {
++		ret = -EFAULT;
++		goto finish;
++	}
++	total += entries;
++	bucket++;
++	if (bucket >= htab->n_buckets) {
++		ret = -ENOENT;
++		goto finish;
++	}
++	if (total < max_count)
++		goto again;
++	goto finish;
++
++unlock_finish:
++	raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++	rcu_read_unlock();
++	this_cpu_dec(bpf_prog_active);
++	preempt_enable();
++finish:
++	/* EFAULT can occur after deletions: count is not a trustworthy result. */
++	if (ret != -EFAULT &&
++	    (copy_to_user(u64_to_user_ptr(attr->batch.out_batch), &bucket, sizeof(bucket)) ||
++	     put_user(total, &uattr->batch.count)))
++		ret = -EFAULT;
++	kfree(keys);
++	kfree(values);
++	kfree(deleted);
++	return ret;
++}
++
++static int htab_map_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++				 union bpf_attr __user *uattr)
++{
++	return htab_map_batch(map, attr, uattr, false);
++}
++
++static int htab_map_lookup_and_delete_batch(struct bpf_map *map,
++		const union bpf_attr *attr, union bpf_attr __user *uattr)
++{
++	return htab_map_batch(map, attr, uattr, true);
++}
++
+ const struct bpf_map_ops htab_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1129,6 +1289,8 @@ const struct bpf_map_ops htab_map_ops = {
+ };
+ 
+ const struct bpf_map_ops htab_lru_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1211,6 +1373,8 @@ int bpf_percpu_hash_update(struct bpf_map *map, void *key, void *value,
+ }
+ 
+ const struct bpf_map_ops htab_percpu_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1220,6 +1384,8 @@ const struct bpf_map_ops htab_percpu_map_ops = {
+ };
+ 
+ const struct bpf_map_ops htab_lru_percpu_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+diff --git a/kernel/bpf/syscall.c b/kernel/bpf/syscall.c
+index 21875496..c939da40 100755
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -16,6 +16,7 @@
+ #include <linux/slab.h>
+ #include <linux/vmalloc.h>
+ #include <linux/mmzone.h>
++#include <linux/mm.h>
+ #include <linux/anon_inodes.h>
+ #include <linux/file.h>
+ #include <linux/license.h>
+@@ -261,7 +262,47 @@ static ssize_t bpf_dummy_write(struct file *filp, const char __user *buf,
+ 	return -EINVAL;
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0-only
++ * Shared array mapping adapted from Linux v5.10. R24U has no MAP_FREEZE,
++ * BTF spin-lock or program-readonly map semantics; those remain rejected.
++ */
++void *bpf_map_area_mmapable_alloc(size_t size, int numa_node)
++{
++	/* Explicit vmalloc, zero padding and VM_USERMAP are mandatory. Avoid
++	 * invoking the OOM killer on behalf of a failed map allocation.
++	 */
++	return __vmalloc_node_range(size, PAGE_SIZE, VMALLOC_START, VMALLOC_END,
++		GFP_USER | __GFP_NOWARN | __GFP_NORETRY | __GFP_ZERO, PAGE_KERNEL,
++		VM_USERMAP, numa_node, __builtin_return_address(0));
++}
++
++static int bpf_map_mmap(struct file *filp, struct vm_area_struct *vma)
++{
++	struct bpf_map *map = filp->private_data;
++
++	if (!map->ops->map_mmap)
++		return -EOPNOTSUPP;
++	if (!(vma->vm_flags & VM_SHARED))
++		return -EINVAL;
++	if (vma->vm_flags & VM_EXEC)
++		return -EACCES;
++	if (!(filp->f_mode & FMODE_READ) ||
++	    ((vma->vm_flags & VM_WRITE) && !(filp->f_mode & FMODE_WRITE)))
++		return -EACCES;
++
++	vma->vm_flags &= ~VM_MAYEXEC;
++	if (!(vma->vm_flags & VM_WRITE))
++		vma->vm_flags &= ~VM_MAYWRITE;
++	/* Generic mmap/fork/split paths hold vm_file, which owns the map ref.
++	 * Closing the fd cannot release the map until the last VMA is gone.
++	 * No writecnt/freeze callbacks are needed without MAP_FREEZE support.
++	 */
++	return map->ops->map_mmap(map, vma);
++}
++
++
+ const struct file_operations bpf_map_fops = {
++	.mmap		= bpf_map_mmap,
+ #ifdef CONFIG_PROC_FS
+ 	.show_fdinfo	= bpf_map_show_fdinfo,
+ #endif
+@@ -1050,6 +1091,7 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 		switch (expected_attach_type) {
+ 		case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 		case BPF_CGROUP_INET4_POST_BIND:
+ 		case BPF_CGROUP_INET6_POST_BIND:
+ 			return 0;
+@@ -1070,6 +1112,9 @@ bpf_prog_load_check_attach_type(enum bpf_prog_type prog_type,
+ 		default:
+ 			return -EINVAL;
+ 		}
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
++        return expected_attach_type == BPF_CGROUP_GETSOCKOPT ||
++               expected_attach_type == BPF_CGROUP_SETSOCKOPT ? 0 : -EINVAL;
+ 	default:
+ 		return 0;
+ 	}
+@@ -1081,6 +1126,7 @@ static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
+ 	switch (prog->type) {
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+ 		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
+ 	default:
+ 		return 0;
+@@ -1297,6 +1343,7 @@ static int bpf_prog_attach(const union bpf_attr *attr)
+ 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
+ 		break;
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+ 	case BPF_CGROUP_INET6_POST_BIND:
+ 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
+@@ -1314,6 +1361,10 @@ static int bpf_prog_attach(const union bpf_attr *attr)
+ 	case BPF_CGROUP_SOCK_OPS:
+ 		ptype = BPF_PROG_TYPE_SOCK_OPS;
+ 		break;
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
++        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
++        break;
+ 	case BPF_CGROUP_DEVICE:
+ 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
+ 		break;
+@@ -1370,6 +1421,7 @@ static int bpf_prog_detach(const union bpf_attr *attr)
+ 		ptype = BPF_PROG_TYPE_CGROUP_SKB;
+ 		break;
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+ 	case BPF_CGROUP_INET6_POST_BIND:
+ 		ptype = BPF_PROG_TYPE_CGROUP_SOCK;
+@@ -1387,6 +1439,10 @@ static int bpf_prog_detach(const union bpf_attr *attr)
+ 	case BPF_CGROUP_SOCK_OPS:
+ 		ptype = BPF_PROG_TYPE_SOCK_OPS;
+ 		break;
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
++        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
++        break;
+ 	case BPF_CGROUP_DEVICE:
+ 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
+ 		break;
+@@ -1432,6 +1488,7 @@ static int bpf_prog_query(const union bpf_attr *attr,
+ 	case BPF_CGROUP_INET_INGRESS:
+ 	case BPF_CGROUP_INET_EGRESS:
+ 	case BPF_CGROUP_INET_SOCK_CREATE:
++	case BPF_CGROUP_INET_SOCK_RELEASE:
+ 	case BPF_CGROUP_INET4_BIND:
+ 	case BPF_CGROUP_INET6_BIND:
+ 	case BPF_CGROUP_INET4_POST_BIND:
+@@ -1443,6 +1500,8 @@ static int bpf_prog_query(const union bpf_attr *attr,
+ 	case BPF_CGROUP_UDP4_RECVMSG:
+ 	case BPF_CGROUP_UDP6_RECVMSG:
+ 	case BPF_CGROUP_SOCK_OPS:
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
+ 	case BPF_CGROUP_DEVICE:
+ 		break;
+ 	default:
+@@ -1749,6 +1808,113 @@ static int bpf_btf_load(const union bpf_attr *attr)
+ 	return btf_new_fd(attr);
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Array batch lookup adapted from Linux commit cb4d03ab499d.
++ * Keys and values have separate allocations: this includes the fix for the
++ * mixed-stride buffer corruption described in Linux commit 953824e508b2.
++ */
++int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++			  union bpf_attr __user *uattr)
++{
++	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
++	void __user *uvalues = u64_to_user_ptr(attr->batch.values);
++	void __user *in = u64_to_user_ptr(attr->batch.in_batch);
++	void *value = NULL, *ptr;
++	u32 key = 0, last = 0, count = 0, limit = attr->batch.count;
++	size_t stride = round_up((size_t)map->value_size, 8), value_size;
++	bool percpu = map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
++	int ret = 0;
++
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	if (!limit)
++		return 0;
++	if (put_user(0, &uattr->batch.count))
++		return -EFAULT;
++	if (percpu && stride > SIZE_MAX / num_possible_cpus())
++		return -E2BIG;
++	value_size = percpu ? stride * num_possible_cpus() : map->value_size;
++	if (!value_size || limit > SIZE_MAX / value_size ||
++	    limit > SIZE_MAX / sizeof(key))
++		return -E2BIG;
++	if (in) {
++		if (copy_from_user(&key, in, sizeof(key)))
++			return -EFAULT;
++		/* Array get_next_key restarts for a non-existent key. */
++		key = key >= map->max_entries ? 0 : key + 1;
++	}
++	value = kmalloc(value_size, GFP_USER | __GFP_NOWARN);
++	if (!value)
++		return -ENOMEM;
++	while (count < limit) {
++		if (key >= map->max_entries) {
++			ret = -ENOENT;
++			break;
++		}
++		if (percpu) {
++			ret = bpf_percpu_array_copy(map, &key, value);
++		} else {
++			rcu_read_lock();
++			ptr = map->ops->map_lookup_elem(map, &key);
++			if (ptr)
++				memcpy(value, ptr, value_size);
++			rcu_read_unlock();
++			ret = ptr ? 0 : -ENOENT;
++		}
++		if (ret)
++			break;
++		if (copy_to_user(ukeys + (size_t)count * sizeof(key), &key, sizeof(key)) ||
++		    copy_to_user(uvalues + (size_t)count * value_size, value, value_size)) {
++			ret = -EFAULT;
++			break;
++		}
++		last = key++;
++		count++;
++	}
++	if (ret != -EFAULT &&
++	    (put_user(count, &uattr->batch.count) ||
++	     (count && copy_to_user(u64_to_user_ptr(attr->batch.out_batch), &last, sizeof(last)))))
++		ret = -EFAULT;
++	kfree(value);
++	return ret;
++}
++
++/* The outer bpf syscall retains security_bpf and unprivileged-BPF checks. */
++#define BPF_MAP_BATCH_LAST_FIELD batch.flags
++
++static int bpf_map_do_batch(const union bpf_attr *attr,
++			  union bpf_attr __user *uattr, int command)
++{
++	struct fd file;
++	struct bpf_map *map;
++	int ret;
++
++	if (CHECK_ATTR(BPF_MAP_BATCH))
++		return -EINVAL;
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	file = fdget(attr->batch.map_fd);
++	map = __bpf_map_get(file);
++	/* In R24U __bpf_map_get releases a non-map descriptor on error. */
++	if (IS_ERR(map))
++		return PTR_ERR(map);
++	if (!(file.file->f_mode & FMODE_CAN_READ) ||
++	    (command == BPF_MAP_LOOKUP_AND_DELETE_BATCH &&
++	     !(file.file->f_mode & FMODE_CAN_WRITE))) {
++		ret = -EPERM;
++		goto out;
++	}
++	if (command == BPF_MAP_LOOKUP_BATCH)
++		ret = map->ops->map_lookup_batch ?
++			map->ops->map_lookup_batch(map, attr, uattr) : -ENOTSUPP;
++	else
++		ret = map->ops->map_lookup_and_delete_batch ?
++			map->ops->map_lookup_and_delete_batch(map, attr, uattr) : -ENOTSUPP;
++out:
++	fdput(file);
++	return ret;
++}
++
+ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
+ {
+ 	union bpf_attr attr;
+@@ -1838,6 +2004,10 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
+ 	case BPF_OBJ_GET_INFO_BY_FD:
+ 		err = bpf_obj_get_info_by_fd(&attr, uattr);
+ 		break;
++	case BPF_MAP_LOOKUP_BATCH:
++	case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
++		err = bpf_map_do_batch(&attr, uattr, cmd);
++		break;
+ 	case BPF_BTF_LOAD:
+ 		err = bpf_btf_load(&attr);
+ 		break;
+diff --git a/kernel/bpf/verifier.c b/kernel/bpf/verifier.c
+index b0af9f2c..617be72c 100755
+--- a/kernel/bpf/verifier.c
++++ b/kernel/bpf/verifier.c
+@@ -230,6 +230,7 @@ static const char * const reg_type_str[] = {
+ 	[PTR_TO_STACK]		= "fp",
+ 	[PTR_TO_PACKET]		= "pkt",
+ 	[PTR_TO_PACKET_END]	= "pkt_end",
++	[PTR_TO_SOCKET]		= "sock",
+ };
+ 
+ #define __BPF_FUNC_STR_FN(x) [BPF_FUNC_ ## x] = __stringify(bpf_ ## x)
+@@ -710,6 +711,7 @@ static bool is_spillable_regtype(enum bpf_reg_type type)
+ 	case PTR_TO_MAP_VALUE_OR_NULL:
+ 	case PTR_TO_STACK:
+ 	case PTR_TO_CTX:
++	case PTR_TO_SOCKET:
+ 	case PTR_TO_PACKET:
+ 	case PTR_TO_PACKET_END:
+ 	case CONST_PTR_TO_MAP:
+@@ -905,6 +907,10 @@ static bool may_access_direct_pkt_data(struct bpf_verifier_env *env,
+ 
+ 		env->seen_direct_write = true;
+ 		return true;
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
++        if (t == BPF_WRITE)
++            env->seen_direct_write = true;
++        return true;
+ 	default:
+ 		return false;
+ 	}
+@@ -985,6 +991,9 @@ static int check_ctx_access(struct bpf_verifier_env *env, int insn_idx, int off,
+ static bool __is_pointer_value(bool allow_ptr_leaks,
+ 			       const struct bpf_reg_state *reg)
+ {
++	/* A borrowed socket must not escape as an untyped address. */
++	if (reg->type == PTR_TO_SOCKET)
++		return true;
+ 	if (allow_ptr_leaks)
+ 		return false;
+ 
+@@ -1089,6 +1098,44 @@ static int check_ptr_alignment(struct bpf_verifier_env *env,
+  * if t==write && value_regno==-1, some unknown value is stored into memory
+  * if t==read && value_regno==-1, don't care what we read from memory
+  */
++/* Borrowed socket pointers are never adjusted or reconstructed from scalars. */
++static bool bpf_sock_ctx_reg_is_unmodified(const struct bpf_reg_state *reg)
++{
++	return reg->type == PTR_TO_CTX && reg->off == 0 &&
++		tnum_is_const(reg->var_off) && reg->var_off.value == 0 &&
++		reg->smin_value == 0 && reg->smax_value == 0 &&
++		reg->umin_value == 0 && reg->umax_value == 0;
++}
++
++static bool bpf_sock_reg_is_unmodified(const struct bpf_reg_state *reg)
++{
++	return reg->type == PTR_TO_SOCKET && !reg->off &&
++		tnum_is_const(reg->var_off) && !reg->var_off.value &&
++		!reg->smin_value && !reg->smax_value &&
++		!reg->umin_value && !reg->umax_value;
++}
++
++static int check_sock_access(struct bpf_verifier_env *env, int insn_idx,
++			     u32 regno, int off, int size,
++			     enum bpf_access_type type)
++{
++	struct bpf_reg_state *reg = &env->cur_state.regs[regno];
++	struct bpf_insn_access_aux info = {};
++
++	if (!bpf_sock_reg_is_unmodified(reg) ||
++	    !bpf_sock_is_valid_access(off, size, type, &info)) {
++		verbose("R%d invalid socket access off=%d size=%d\n", regno, off, size);
++		return -EACCES;
++	}
++	env->insn_aux_data[insn_idx].ctx_field_size = info.ctx_field_size;
++	return 0;
++}
++
++static bool bpf_ptr_needs_conversion(enum bpf_reg_type type)
++{
++	return type == PTR_TO_CTX || type == PTR_TO_SOCKET;
++}
++
+ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regno, int off,
+ 			    int bpf_size, enum bpf_access_type t,
+ 			    int value_regno)
+@@ -1101,6 +1148,9 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
+ 	if (size < 0)
+ 		return size;
+ 
++	if (reg->type == PTR_TO_SOCKET && !bpf_sock_reg_is_unmodified(reg))
++		return -EACCES;
++
+ 	/* alignment checks will add in reg->off themselves */
+ 	err = check_ptr_alignment(env, reg, off, size);
+ 	if (err)
+@@ -1156,6 +1206,10 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
+ 			state->regs[value_regno].type = reg_type;
+ 		}
+ 
++	} else if (reg->type == PTR_TO_SOCKET) {
++		err = check_sock_access(env, insn_idx, regno, off, size, t);
++		if (!err && t == BPF_READ && value_regno >= 0)
++			mark_reg_unknown(state->regs, value_regno);
+ 	} else if (reg->type == PTR_TO_STACK) {
+ 		/* stack accesses must be at a fixed offset, so that we can
+ 		 * determine what type of data were returned.
+@@ -1394,6 +1448,18 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
+ 		expected_type = PTR_TO_CTX;
+ 		if (type != expected_type)
+ 			goto err_type;
++	} else if (arg_type == ARG_PTR_TO_SOCK_CTX) {
++		expected_type = PTR_TO_CTX;
++		if (type != expected_type)
++			goto err_type;
++		if (!bpf_sock_ctx_reg_is_unmodified(reg))
++			return -EACCES;
++	} else if (arg_type == ARG_PTR_TO_SOCKET) {
++		expected_type = PTR_TO_SOCKET;
++		if (type != expected_type)
++			goto err_type;
++		if (!bpf_sock_reg_is_unmodified(reg))
++			return -EACCES;
+ 	} else if (arg_type == ARG_PTR_TO_MEM ||
+ 		   arg_type == ARG_PTR_TO_UNINIT_MEM) {
+ 		expected_type = PTR_TO_STACK;
+@@ -1841,6 +1907,10 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
+ 				dst);
+ 		return -EACCES;
+ 	}
++	if (ptr_reg->type == PTR_TO_SOCKET) {
++		verbose("socket pointer arithmetic is prohibited\n");
++		return -EACCES;
++	}
+ 	if (ptr_reg->type == PTR_TO_PACKET_END) {
+ 		if (!env->allow_ptr_leaks)
+ 			verbose("R%d pointer arithmetic on PTR_TO_PACKET_END prohibited\n",
+@@ -2788,6 +2858,15 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
+ 
+ 	dst_reg = &regs[insn->dst_reg];
+ 
++
++    if (BPF_SRC(insn->code) == BPF_K && insn->imm == 0 &&
++        (opcode == BPF_JEQ || opcode == BPF_JNE) && dst_reg->type == PTR_TO_SOCKET) {
++        /* This type is supplied only by a holding, non-NULL hook context. */
++        if (opcode == BPF_JNE)
++            *insn_idx += insn->off;
++        return 0;
++    }
++
+ 	/* detect if R == 0 where R was initialized to zero earlier */
+ 	if (BPF_SRC(insn->code) == BPF_K &&
+ 	    (opcode == BPF_JEQ || opcode == BPF_JNE) &&
+@@ -2997,6 +3076,7 @@ static int check_return_code(struct bpf_verifier_env *env)
+ 	case BPF_PROG_TYPE_CGROUP_SKB:
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 	case BPF_PROG_TYPE_SOCK_OPS:
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+ 	case BPF_PROG_TYPE_CGROUP_DEVICE:
+ 		break;
+ 	default:
+@@ -3285,6 +3365,14 @@ static bool regsafe(struct bpf_reg_state *rold,
+ 		return true;
+ 	if (rcur->type == NOT_INIT)
+ 		return false;
++	/* A path checked as an untyped scalar must never prune a path
++	 * carrying a socket: its helper/leak restrictions differ.
++	 */
++	if (rcur->type == PTR_TO_SOCKET && rold->type != PTR_TO_SOCKET)
++		return false;
++	/* A scalar path must not hide a socket context helper argument. */
++	if (rcur->type == PTR_TO_CTX && rold->type != PTR_TO_CTX)
++		return false;
+ 	switch (rold->type) {
+ 	case SCALAR_VALUE:
+ 		if (rcur->type == SCALAR_VALUE) {
+@@ -3621,8 +3709,8 @@ static int do_check(struct bpf_verifier_env *env)
+ 				*prev_src_type = src_reg_type;
+ 
+ 			} else if (src_reg_type != *prev_src_type &&
+-				   (src_reg_type == PTR_TO_CTX ||
+-				    *prev_src_type == PTR_TO_CTX)) {
++				   (bpf_ptr_needs_conversion(src_reg_type) ||
++				    bpf_ptr_needs_conversion(*prev_src_type))) {
+ 				/* ABuser program is trying to use the same insn
+ 				 * dst_reg = *(u32*) (src_reg + off)
+ 				 * with different pointer types:
+@@ -3668,8 +3756,8 @@ static int do_check(struct bpf_verifier_env *env)
+ 			if (*prev_dst_type == NOT_INIT) {
+ 				*prev_dst_type = dst_reg_type;
+ 			} else if (dst_reg_type != *prev_dst_type &&
+-				   (dst_reg_type == PTR_TO_CTX ||
+-				    *prev_dst_type == PTR_TO_CTX)) {
++				   (bpf_ptr_needs_conversion(dst_reg_type) ||
++				    bpf_ptr_needs_conversion(*prev_dst_type))) {
+ 				verbose("same insn cannot be used with different pointers\n");
+ 				return -EINVAL;
+ 			}
+@@ -4022,7 +4110,10 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
+ 	struct bpf_prog *new_prog;
+ 	enum bpf_access_type type;
+ 	bool is_narrower_load;
+-	u32 target_size;
++	u32 target_size, original_offset;
++	enum bpf_reg_type ptr_type;
++	u32 (*convert_access)(enum bpf_access_type, const struct bpf_insn *,
++		struct bpf_insn *, struct bpf_prog *, u32 *);
+ 
+ 	if (ops->gen_prologue) {
+ 		cnt = ops->gen_prologue(insn_buf, env->seen_direct_write,
+@@ -4040,8 +4131,6 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
+ 		}
+ 	}
+ 
+-	if (!ops->convert_ctx_access)
+-		return 0;
+ 
+ 	insn = env->prog->insnsi + delta;
+ 
+@@ -4087,8 +4176,17 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
+ 			continue;
+ 		}
+ 
+-		if (env->insn_aux_data[i + delta].ptr_type != PTR_TO_CTX)
+-			continue;
++
++        ptr_type = env->insn_aux_data[i + delta].ptr_type;
++        if (ptr_type == PTR_TO_SOCKET) {
++            convert_access = bpf_sock_convert_ctx_access;
++        } else if (ptr_type == PTR_TO_CTX && ops->convert_ctx_access) {
++            convert_access = ops->convert_ctx_access;
++        } else {
++            continue;
++        }
++        original_offset = insn->off;
++
+ 
+ 		ctx_field_size = env->insn_aux_data[i + delta].ctx_field_size;
+ 		size = BPF_LDST_BYTES(insn);
+@@ -4119,7 +4217,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
+ 		}
+ 
+ 		target_size = 0;
+-		cnt = ops->convert_ctx_access(type, insn, insn_buf, env->prog,
++		cnt = convert_access(type, insn, insn_buf, env->prog,
+ 					      &target_size);
+ 		if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf) ||
+ 		    (ctx_field_size && !target_size)) {
+@@ -4127,7 +4225,22 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
+ 			return -EINVAL;
+ 		}
+ 
+-		if (is_narrower_load && size < target_size) {
++
++        if (is_narrower_load && ptr_type == PTR_TO_SOCKET) {
++            u32 byte_offset = original_offset & 3;
++#ifdef __LITTLE_ENDIAN
++            u32 shift = byte_offset * 8;
++#else
++            u32 shift = (4 - size - byte_offset) * 8;
++#endif
++            /* Translate the logical 32-bit field, including zero padding of
++             * 8/16-bit kernel members, before selecting its requested bytes.
++             */
++            if (shift)
++                insn_buf[cnt++] = BPF_ALU32_IMM(BPF_RSH, insn->dst_reg, shift);
++            insn_buf[cnt++] = BPF_ALU32_IMM(BPF_AND, insn->dst_reg, (1U << (size * 8)) - 1);
++        } else if (is_narrower_load && size < target_size) {
++
+ 			if (ctx_field_size <= 4)
+ 				insn_buf[cnt++] = BPF_ALU32_IMM(BPF_AND, insn->dst_reg,
+ 								(1 << size * 8) - 1);
+diff --git a/kernel/fork.c b/kernel/fork.c
+index d260268b..bc3de25e 100755
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -494,7 +494,10 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
+ 		if (retval)
+ 			goto fail_nomem_policy;
+ 		tmp->vm_mm = mm;
+-		if (anon_vma_fork(tmp, mpnt))
++		if (tmp->vm_flags & VM_WIPEONFORK) {
++			/* No inherited pages or parent anon_vma; prepare on fault. */
++			tmp->anon_vma = NULL;
++		} else if (anon_vma_fork(tmp, mpnt))
+ 			goto fail_nomem_anon_vma_fork;
+ 		tmp->vm_flags &=
+ 			~(VM_LOCKED|VM_LOCKONFAULT|VM_UFFD_MISSING|VM_UFFD_WP);
+@@ -541,7 +544,8 @@ static int dup_mmap(struct mm_struct *mm, struct mm_struct *oldmm)
+ 
+ 		uksm_vma_add_new(tmp);
+ 		mm->map_count++;
+-		retval = copy_page_range(mm, oldmm, mpnt);
++		if (!(tmp->vm_flags & VM_WIPEONFORK))
++			retval = copy_page_range(mm, oldmm, mpnt);
+ 
+ 		if (tmp->vm_ops && tmp->vm_ops->open)
+ 			tmp->vm_ops->open(tmp);
+diff --git a/mm/madvise.c b/mm/madvise.c
+index d1d09bdf..4184a32c 100755
+--- a/mm/madvise.c
++++ b/mm/madvise.c
+@@ -72,6 +72,17 @@ static long madvise_behavior(struct vm_area_struct *vma,
+ 		}
+ 		new_flags &= ~VM_DONTCOPY;
+ 		break;
++	case MADV_WIPEONFORK:
++		/* Only private anonymous mappings can be wiped on fork. */
++		if (vma->vm_file || (vma->vm_flags & VM_SHARED)) {
++			error = -EINVAL;
++			goto out;
++		}
++		new_flags |= VM_WIPEONFORK;
++		break;
++	case MADV_KEEPONFORK:
++		new_flags &= ~VM_WIPEONFORK;
++		break;
+ 	case MADV_DONTDUMP:
+ 		new_flags |= VM_DONTDUMP;
+ 		break;
+@@ -406,6 +417,8 @@ madvise_behavior_valid(int behavior)
+ #endif
+ 	case MADV_DONTDUMP:
+ 	case MADV_DODUMP:
++	case MADV_WIPEONFORK:
++	case MADV_KEEPONFORK:
+ 		return true;
+ 
+ 	default:
+diff --git a/net/compat.c b/net/compat.c
+index 72c99544..086fe1bd 100755
+--- a/net/compat.c
++++ b/net/compat.c
+@@ -11,6 +11,7 @@
+  * Copyright (C) 2000,2001	Andi Kleen, SuSE Labs
+  */
+ 
++#include <linux/bpf-cgroup.h>
+ #include <linux/kernel.h>
+ #include <linux/gfp.h>
+ #include <linux/fs.h>
+@@ -369,6 +370,9 @@ static int compat_sock_setsockopt(struct socket *sock, int level, int optname,
+ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		       char __user *, optval, unsigned int, optlen)
+ {
++	mm_segment_t oldfs = get_fs();
++	char *kernel_optval = NULL;
++	int filtered_optlen;
+ 	int err;
+ 	struct socket *sock = sockfd_lookup(fd, &err);
+ 
+@@ -379,6 +383,27 @@ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 			return err;
+ 		}
+ 
++        filtered_optlen = (int)optlen;
++        if (filtered_optlen < 0) {
++            err = -EINVAL;
++            goto borealis_sockopt_put;
++        }
++
++        err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
++                optval, &filtered_optlen, &kernel_optval);
++        if (err < 0)
++            goto borealis_sockopt_put;
++        if (err > 0) {
++            err = 0;
++            goto borealis_sockopt_put;
++        }
++        if (kernel_optval) {
++            set_fs(KERNEL_DS);
++            optval = (char __user __force *)kernel_optval;
++        }
++
++        optlen = filtered_optlen;
++
+ 		if (level == SOL_SOCKET)
+ 			err = compat_sock_setsockopt(sock, level,
+ 					optname, optval, optlen);
+@@ -388,6 +413,12 @@ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		else
+ 			err = sock->ops->setsockopt(sock, level,
+ 					optname, optval, optlen);
++borealis_sockopt_put:
++        if (kernel_optval) {
++            set_fs(oldfs);
++            kfree(kernel_optval);
++        }
++
+ 		sockfd_put(sock);
+ 	}
+ 	return err;
+@@ -493,6 +524,7 @@ EXPORT_SYMBOL(compat_sock_get_timestampns);
+ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		       char __user *, optval, int __user *, optlen)
+ {
++	int max_optlen;
+ 	int err;
+ 	struct socket *sock = sockfd_lookup(fd, &err);
+ 
+@@ -503,6 +535,7 @@ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 			return err;
+ 		}
+ 
++        max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
+ 		if (level == SOL_SOCKET)
+ 			err = compat_sock_getsockopt(sock, level,
+ 					optname, optval, optlen);
+@@ -512,6 +545,9 @@ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		else
+ 			err = sock->ops->getsockopt(sock, level,
+ 					optname, optval, optlen);
++        err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
++                optval, optlen, max_optlen, err);
++
+ 		sockfd_put(sock);
+ 	}
+ 	return err;
+diff --git a/net/core/filter.c b/net/core/filter.c
+index 7744800b..057123f1 100755
+--- a/net/core/filter.c
++++ b/net/core/filter.c
+@@ -2985,6 +2985,19 @@ static const struct bpf_func_proto bpf_get_socket_cookie_proto = {
+ 	.arg1_type      = ARG_PTR_TO_CTX,
+ };
+ 
++
++BPF_CALL_1(bpf_get_socket_cookie_sock, struct sock *, sk)
++{
++    return sock_gen_cookie(sk);
++}
++
++const struct bpf_func_proto bpf_get_socket_cookie_sock_proto = {
++    .func = bpf_get_socket_cookie_sock,
++    .gpl_only = false,
++    .ret_type = RET_INTEGER,
++    .arg1_type = ARG_PTR_TO_SOCKET,
++};
++
+ BPF_CALL_1(bpf_get_socket_uid, struct sk_buff *, skb)
+ {
+ 	struct sock *sk = sk_to_full_sk(skb->sk);
+@@ -3526,11 +3539,63 @@ static bool __sock_filter_check_size(int off, int size,
+ 	return size == size_default;
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Borrowed socket metadata access, adapted to R24U from Linux v5.10.
++ * Only hooks whose context holds a live, non-NULL socket may supply this
++ * register type. Acquired/nullable sockets still require a separate port.
++ */
++bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
++			    struct bpf_insn_access_aux *info)
++{
++	int field;
++
++	if (type != BPF_READ || (size != 1 && size != 2 && size != 4) ||
++	    off < 0 || off > sizeof(struct bpf_sock) - size || off % size)
++		return false;
++	field = off & ~3;
++	if ((off & 3) + size > 4)
++		return false;
++	switch (field) {
++	case offsetof(struct bpf_sock, bound_dev_if):
++	case offsetof(struct bpf_sock, mark):
++	case offsetof(struct bpf_sock, priority):
++		if (size != 4)
++			return false;
++		break;
++	case offsetof(struct bpf_sock, family):
++	case offsetof(struct bpf_sock, type):
++	case offsetof(struct bpf_sock, protocol):
++	case offsetof(struct bpf_sock, src_ip4):
++	case offsetof(struct bpf_sock, src_ip6[0]) ... offsetof(struct bpf_sock, src_ip6[3]):
++	case offsetof(struct bpf_sock, src_port):
++	case offsetof(struct bpf_sock, dst_port):
++	case offsetof(struct bpf_sock, dst_ip4):
++	case offsetof(struct bpf_sock, dst_ip6[0]) ... offsetof(struct bpf_sock, dst_ip6[3]):
++	case offsetof(struct bpf_sock, state):
++	case offsetof(struct bpf_sock, rx_queue_mapping):
++		break;
++	default:
++		return false;
++	}
++	info->ctx_field_size = 4;
++	return true;
++}
++
+ static bool sock_filter_is_valid_access(int off, int size,
+ 					enum bpf_access_type type,
+ 					const struct bpf_prog *prog,
+ 					struct bpf_insn_access_aux *info)
+ {
++	/* Notification context is read-only; no legacy narrow-load rewriting. */
++	if (prog->expected_attach_type == BPF_CGROUP_INET_SOCK_RELEASE) {
++		if (type != BPF_READ || size != sizeof(__u32) ||
++		    off < 0 || off > sizeof(struct bpf_sock) - sizeof(__u32) ||
++		    (off & 3))
++			return false;
++		bpf_ctx_record_field_size(info, sizeof(__u32));
++		return true;
++	}
++
+ 	if (off < 0 || off >= sizeof(struct bpf_sock))
+ 		return false;
+ 	if (off % size != 0)
+@@ -3982,7 +4047,7 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
+ 	return insn - insn_buf;
+ }
+ 
+-static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
++u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
+ 					  const struct bpf_insn *si,
+ 					  struct bpf_insn *insn_buf,
+ 					  struct bpf_prog *prog, u32 *target_size)
+@@ -3990,6 +4055,8 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
+ 	struct bpf_insn *insn = insn_buf;
+ 	int off;
+ 
++	*target_size = 4;
++
+ 	switch (si->off) {
+ 	case offsetof(struct bpf_sock, bound_dev_if):
+ 		BUILD_BUG_ON(FIELD_SIZEOF(struct sock, sk_bound_dev_if) != 4);
+@@ -4081,6 +4148,38 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
+ 						    skc_num),
+ 				       target_size));
+ 		break;
++    case offsetof(struct bpf_sock, dst_port):
++        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_dport),
++            si->dst_reg, si->src_reg,
++            bpf_target_off(struct sock_common, skc_dport,
++                FIELD_SIZEOF(struct sock_common, skc_dport), target_size));
++        break;
++    case offsetof(struct bpf_sock, dst_ip4):
++        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
++            offsetof(struct sock_common, skc_daddr));
++        break;
++    case bpf_ctx_range_till(struct bpf_sock, dst_ip6[0], dst_ip6[3]):
++#if IS_ENABLED(CONFIG_IPV6)
++        off = si->off - offsetof(struct bpf_sock, dst_ip6[0]);
++        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
++            offsetof(struct sock_common, skc_v6_daddr.s6_addr32[0]) + off);
++#else
++        *insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
++#endif
++        break;
++    case offsetof(struct bpf_sock, state):
++        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_state),
++            si->dst_reg, si->src_reg,
++            bpf_target_off(struct sock_common, skc_state,
++                FIELD_SIZEOF(struct sock_common, skc_state), target_size));
++        break;
++    case offsetof(struct bpf_sock, rx_queue_mapping):
++        /* R24U does not expose sk_rx_queue_mapping. Return its documented
++         * unavailable value, with the 32-bit load's correct zero extension.
++         */
++        *insn++ = BPF_MOV32_IMM(si->dst_reg, -1);
++        break;
++
+ 	}
+ 
+ 	return insn - insn_buf;
+@@ -4490,10 +4589,49 @@ const struct bpf_prog_ops lwt_xmit_prog_ops = {
+ 	.test_run		= bpf_prog_test_run_skb,
+ };
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * CGROUP_SOCK context is a live struct sock, never a struct sk_buff.
++ * The private argument constraint rejects adjusted context pointers.
++ */
++static const struct bpf_func_proto bpf_get_socket_cookie_sock_ctx_proto = {
++	.func = bpf_get_socket_cookie_sock,
++	.gpl_only = false,
++	.ret_type = RET_INTEGER,
++	.arg1_type = ARG_PTR_TO_SOCK_CTX,
++};
++
++BPF_CALL_1(bpf_get_socket_uid_sock_ctx, struct sock *, sk)
++{
++	kuid_t kuid = sock_net_uid(sock_net(sk), sk);
++
++	return from_kuid_munged(sock_net(sk)->user_ns, kuid);
++}
++
++static const struct bpf_func_proto bpf_get_socket_uid_sock_ctx_proto = {
++	.func = bpf_get_socket_uid_sock_ctx,
++	.gpl_only = false,
++	.ret_type = RET_INTEGER,
++	.arg1_type = ARG_PTR_TO_SOCK_CTX,
++};
++
++static const struct bpf_func_proto *
++cg_sock_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
++{
++	switch (func_id) {
++	case BPF_FUNC_get_socket_cookie:
++		return &bpf_get_socket_cookie_sock_ctx_proto;
++	case BPF_FUNC_get_socket_uid:
++		return &bpf_get_socket_uid_sock_ctx_proto;
++	default:
++		return bpf_base_func_proto(func_id);
++	}
++}
++
++
+ const struct bpf_verifier_ops cg_sock_verifier_ops = {
+-	.get_func_proto		= bpf_base_func_proto,
++	.get_func_proto		= cg_sock_func_proto,
+ 	.is_valid_access	= sock_filter_is_valid_access,
+-	.convert_ctx_access	= sock_filter_convert_ctx_access,
++	.convert_ctx_access	= bpf_sock_convert_ctx_access,
+ };
+ 
+ const struct bpf_prog_ops cg_sock_prog_ops = {
+diff --git a/net/ipv4/af_inet.c b/net/ipv4/af_inet.c
+index 8ede922b..d018d89d 100755
+--- a/net/ipv4/af_inet.c
++++ b/net/ipv4/af_inet.c
+@@ -443,6 +443,9 @@ int inet_release(struct socket *sock)
+ 	if (sk) {
+ 		long timeout;
+ 
++		/* Notify before detaching or closing the live socket. */
++		BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk);
++
+ #ifdef CONFIG_NETFILTER_XT_MATCH_QTAGUID
+ 		qtaguid_untag(sock, true);
+ #endif
+diff --git a/net/socket.c b/net/socket.c
+index 9c937f9f..9e1061cd 100755
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -58,6 +58,7 @@
+  *	Based upon Swansea University Computer Society NET3.039
+  */
+ 
++#include <linux/bpf-cgroup.h>
+ #include <linux/mm.h>
+ #include <linux/socket.h>
+ #include <linux/file.h>
+@@ -1761,6 +1762,8 @@ SYSCALL_DEFINE4(recv, int, fd, void __user *, ubuf, size_t, size,
+ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		char __user *, optval, int, optlen)
+ {
++	mm_segment_t oldfs = get_fs();
++	char *kernel_optval = NULL;
+ 	int err, fput_needed;
+ 	struct socket *sock;
+ 
+@@ -1773,6 +1776,19 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		if (err)
+ 			goto out_put;
+ 
++        err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
++                optval, &optlen, &kernel_optval);
++        if (err < 0)
++            goto borealis_sockopt_put;
++        if (err > 0) {
++            err = 0;
++            goto borealis_sockopt_put;
++        }
++        if (kernel_optval) {
++            set_fs(KERNEL_DS);
++            optval = (char __user __force *)kernel_optval;
++        }
++
+ 		if (level == SOL_SOCKET)
+ 			err =
+ 			    sock_setsockopt(sock, level, optname, optval,
+@@ -1781,6 +1797,12 @@ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 			err =
+ 			    sock->ops->setsockopt(sock, level, optname, optval,
+ 						  optlen);
++borealis_sockopt_put:
++        if (kernel_optval) {
++            set_fs(oldfs);
++            kfree(kernel_optval);
++        }
++
+ out_put:
+ 		fput_light(sock->file, fput_needed);
+ 	}
+@@ -1795,6 +1817,7 @@ out_put:
+ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		char __user *, optval, int __user *, optlen)
+ {
++	int max_optlen;
+ 	int err, fput_needed;
+ 	struct socket *sock;
+ 
+@@ -1804,6 +1827,7 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		if (err)
+ 			goto out_put;
+ 
++        max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
+ 		if (level == SOL_SOCKET)
+ 			err =
+ 			    sock_getsockopt(sock, level, optname, optval,
+@@ -1812,6 +1836,9 @@ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 			err =
+ 			    sock->ops->getsockopt(sock, level, optname, optval,
+ 						  optlen);
++        err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
++                optval, optlen, max_optlen, err);
++
+ out_put:
+ 		fput_light(sock->file, fput_needed);
+ 	}
+diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
+index b14f1de1..41fb6a4d 100755
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -2271,13 +2271,17 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
+ 			    const struct task_security_struct *old_tsec,
+ 			    const struct task_security_struct *new_tsec)
+ {
++#ifdef CONFIG_KSU
+ 	static u32 ksu_sid;
+ 	char *secdata;
++#endif
+ 	int nnp = (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS);
+ 	int nosuid = (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID);
+ 	int rc;
++#ifdef CONFIG_KSU
+ 	int error;
+ 	u32 seclen;
++#endif
+ 
+ 	if (!nnp && !nosuid)
+ 		return 0; /* neither NNP nor nosuid */
+@@ -2285,6 +2289,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
+ 	if (new_tsec->sid == old_tsec->sid)
+ 		return 0; /* No change in credentials */
+ 
++	// Borealis: KernelSU-only NNP exception.
++#ifdef CONFIG_KSU
+ 	if(!ksu_sid){
+ 		security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
+ 	}
+@@ -2297,6 +2303,8 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
+ 		}
+ 	}
+ 
++#endif
++
+ 	/*
+ 	 * The only transitions we permit under NNP or nosuid
+ 	 * are transitions to bounded SIDs, i.e. SIDs that are

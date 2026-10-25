@@ -1,0 +1,481 @@
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -959,6 +959,11 @@
+ 	__u32 src_port;		/* Allows 4-byte read.
+ 				 * Stored in host byte order
+ 				 */
++    __u32 dst_port; /* Network byte order in the lower 16 bits. */
++    __u32 dst_ip4;
++    __u32 dst_ip6[4];
++    __u32 state;
++    __s32 rx_queue_mapping; /* -1 means unavailable. */
+ };
+ 
+ #define XDP_PACKET_HEADROOM 256
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -97,6 +97,7 @@
+ 	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
+ 
+ 	ARG_PTR_TO_CTX,		/* pointer to context */
++	ARG_PTR_TO_SOCKET,	/* unmodified borrowed socket */
+ 	ARG_ANYTHING,		/* any (initialized) argument is ok */
+ };
+ 
+@@ -154,6 +155,7 @@
+ 	PTR_TO_STACK,		 /* reg == frame_pointer + offset */
+ 	PTR_TO_PACKET,		 /* reg points to skb->data */
+ 	PTR_TO_PACKET_END,	 /* skb->data + headlen */
++	PTR_TO_SOCKET,		 /* borrowed live socket from a holding context */
+ };
+ 
+ /* The information passed from prog-specific *_is_valid_access
+@@ -551,6 +553,28 @@
+ #endif
+ 
+ /* verifier prototypes for helper functions called from eBPF programs */
++
++#ifdef CONFIG_NET
++bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
++                             struct bpf_insn_access_aux *info);
++u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
++        const struct bpf_insn *si, struct bpf_insn *buffer,
++        struct bpf_prog *prog, u32 *target_size);
++#else
++static inline bool bpf_sock_is_valid_access(int off, int size,
++        enum bpf_access_type type, struct bpf_insn_access_aux *info)
++{
++    return false;
++}
++static inline u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
++        const struct bpf_insn *si, struct bpf_insn *buffer,
++        struct bpf_prog *prog, u32 *target_size)
++{
++    return 0;
++}
++#endif
++extern const struct bpf_func_proto bpf_get_socket_cookie_sock_proto;
++
+ extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
+ extern const struct bpf_func_proto bpf_map_update_elem_proto;
+ extern const struct bpf_func_proto bpf_map_delete_elem_proto;
+--- a/net/core/filter.c
++++ b/net/core/filter.c
+@@ -2983,6 +2983,19 @@
+ 	.gpl_only       = false,
+ 	.ret_type       = RET_INTEGER,
+ 	.arg1_type      = ARG_PTR_TO_CTX,
++};
++
++
++BPF_CALL_1(bpf_get_socket_cookie_sock, struct sock *, sk)
++{
++    return sock_gen_cookie(sk);
++}
++
++const struct bpf_func_proto bpf_get_socket_cookie_sock_proto = {
++    .func = bpf_get_socket_cookie_sock,
++    .gpl_only = false,
++    .ret_type = RET_INTEGER,
++    .arg1_type = ARG_PTR_TO_SOCKET,
+ };
+ 
+ BPF_CALL_1(bpf_get_socket_uid, struct sk_buff *, skb)
+@@ -3526,6 +3539,48 @@
+ 	return size == size_default;
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Borrowed socket metadata access, adapted to R24U from Linux v5.10.
++ * Only hooks whose context holds a live, non-NULL socket may supply this
++ * register type. Acquired/nullable sockets still require a separate port.
++ */
++bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
++			    struct bpf_insn_access_aux *info)
++{
++	int field;
++
++	if (type != BPF_READ || (size != 1 && size != 2 && size != 4) ||
++	    off < 0 || off > sizeof(struct bpf_sock) - size || off % size)
++		return false;
++	field = off & ~3;
++	if ((off & 3) + size > 4)
++		return false;
++	switch (field) {
++	case offsetof(struct bpf_sock, bound_dev_if):
++	case offsetof(struct bpf_sock, mark):
++	case offsetof(struct bpf_sock, priority):
++		if (size != 4)
++			return false;
++		break;
++	case offsetof(struct bpf_sock, family):
++	case offsetof(struct bpf_sock, type):
++	case offsetof(struct bpf_sock, protocol):
++	case offsetof(struct bpf_sock, src_ip4):
++	case offsetof(struct bpf_sock, src_ip6[0]) ... offsetof(struct bpf_sock, src_ip6[3]):
++	case offsetof(struct bpf_sock, src_port):
++	case offsetof(struct bpf_sock, dst_port):
++	case offsetof(struct bpf_sock, dst_ip4):
++	case offsetof(struct bpf_sock, dst_ip6[0]) ... offsetof(struct bpf_sock, dst_ip6[3]):
++	case offsetof(struct bpf_sock, state):
++	case offsetof(struct bpf_sock, rx_queue_mapping):
++		break;
++	default:
++		return false;
++	}
++	info->ctx_field_size = 4;
++	return true;
++}
++
+ static bool sock_filter_is_valid_access(int off, int size,
+ 					enum bpf_access_type type,
+ 					const struct bpf_prog *prog,
+@@ -3982,13 +4037,15 @@
+ 	return insn - insn_buf;
+ }
+ 
+-static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
++u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
+ 					  const struct bpf_insn *si,
+ 					  struct bpf_insn *insn_buf,
+ 					  struct bpf_prog *prog, u32 *target_size)
+ {
+ 	struct bpf_insn *insn = insn_buf;
+ 	int off;
++
++	*target_size = 4;
+ 
+ 	switch (si->off) {
+ 	case offsetof(struct bpf_sock, bound_dev_if):
+@@ -4081,6 +4138,38 @@
+ 						    skc_num),
+ 				       target_size));
+ 		break;
++    case offsetof(struct bpf_sock, dst_port):
++        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_dport),
++            si->dst_reg, si->src_reg,
++            bpf_target_off(struct sock_common, skc_dport,
++                FIELD_SIZEOF(struct sock_common, skc_dport), target_size));
++        break;
++    case offsetof(struct bpf_sock, dst_ip4):
++        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
++            offsetof(struct sock_common, skc_daddr));
++        break;
++    case bpf_ctx_range_till(struct bpf_sock, dst_ip6[0], dst_ip6[3]):
++#if IS_ENABLED(CONFIG_IPV6)
++        off = si->off - offsetof(struct bpf_sock, dst_ip6[0]);
++        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
++            offsetof(struct sock_common, skc_v6_daddr.s6_addr32[0]) + off);
++#else
++        *insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
++#endif
++        break;
++    case offsetof(struct bpf_sock, state):
++        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_state),
++            si->dst_reg, si->src_reg,
++            bpf_target_off(struct sock_common, skc_state,
++                FIELD_SIZEOF(struct sock_common, skc_state), target_size));
++        break;
++    case offsetof(struct bpf_sock, rx_queue_mapping):
++        /* R24U does not expose sk_rx_queue_mapping. Return its documented
++         * unavailable value, with the 32-bit load's correct zero extension.
++         */
++        *insn++ = BPF_MOV32_IMM(si->dst_reg, -1);
++        break;
++
+ 	}
+ 
+ 	return insn - insn_buf;
+@@ -4493,7 +4582,7 @@
+ const struct bpf_verifier_ops cg_sock_verifier_ops = {
+ 	.get_func_proto		= bpf_base_func_proto,
+ 	.is_valid_access	= sock_filter_is_valid_access,
+-	.convert_ctx_access	= sock_filter_convert_ctx_access,
++	.convert_ctx_access	= bpf_sock_convert_ctx_access,
+ };
+ 
+ const struct bpf_prog_ops cg_sock_prog_ops = {
+--- a/kernel/bpf/sockopt.c
++++ b/kernel/bpf/sockopt.c
+@@ -3,8 +3,8 @@
+  * Cgroup socket-option hooks for the R24U backport.
+  * Derived from Linux commit 0d01da6afc54 and the Linux v5.10 implementation
+  * by Stanislav Fomichev and the Linux BPF contributors.
+- * Context validation rejects unsupported socket-pointer access; adding an
+- * enum alone must never grant unchecked access to kernel memory.
++ * Socket pointers are borrowed from the holding hook context and validated
++ * by the shared socket verifier; nullable/acquired sockets remain unsupported.
+  */
+ #include <linux/bpf.h>
+ #include <linux/bpf-cgroup.h>
+@@ -154,6 +154,7 @@
+ cg_sockopt_func_proto(enum bpf_func_id id, const struct bpf_prog *prog)
+ {
+ 	switch (id) {
++	case BPF_FUNC_get_socket_cookie: return &bpf_get_socket_cookie_sock_proto;
+ 	case BPF_FUNC_map_lookup_elem: return &bpf_map_lookup_elem_proto;
+ 	case BPF_FUNC_map_update_elem: return &bpf_map_update_elem_proto;
+ 	case BPF_FUNC_map_delete_elem: return &bpf_map_delete_elem_proto;
+@@ -192,6 +193,10 @@
+ 	if (type != BPF_READ)
+ 		return false;
+ 	switch (off) {
++	case offsetof(struct bpf_sockopt, sk):
++		if (size != 8) return false;
++		info->reg_type = PTR_TO_SOCKET;
++		return true;
+ 	case offsetof(struct bpf_sockopt, optval):
+ 		if (size != 8) return false;
+ 		info->reg_type = PTR_TO_PACKET;
+@@ -206,9 +211,6 @@
+ 	case offsetof(struct bpf_sockopt, retval):
+ 		return size == 4 && prog->expected_attach_type == BPF_CGROUP_GETSOCKOPT;
+ 	default:
+-		/* PTR_TO_SOCKET and its verifier rules need a separate backport.
+-		 * Do not expose a kernel pointer as an untyped scalar.
+-		 */
+ 		return false;
+ 	}
+ }
+@@ -232,6 +234,7 @@
+ 			*insn++ = CG_SOCKOPT_ACCESS_FIELD(BPF_LDX_MEM, F); \
+ 		break
+ 	switch (si->off) {
++	CONVERT_FIELD(sk);
+ 	CONVERT_FIELD(level);
+ 	CONVERT_FIELD(optname);
+ 	CONVERT_FIELD(optlen);
+--- a/kernel/bpf/verifier.c
++++ b/kernel/bpf/verifier.c
+@@ -230,6 +230,7 @@
+ 	[PTR_TO_STACK]		= "fp",
+ 	[PTR_TO_PACKET]		= "pkt",
+ 	[PTR_TO_PACKET_END]	= "pkt_end",
++	[PTR_TO_SOCKET]		= "sock",
+ };
+ 
+ #define __BPF_FUNC_STR_FN(x) [BPF_FUNC_ ## x] = __stringify(bpf_ ## x)
+@@ -710,6 +711,7 @@
+ 	case PTR_TO_MAP_VALUE_OR_NULL:
+ 	case PTR_TO_STACK:
+ 	case PTR_TO_CTX:
++	case PTR_TO_SOCKET:
+ 	case PTR_TO_PACKET:
+ 	case PTR_TO_PACKET_END:
+ 	case CONST_PTR_TO_MAP:
+@@ -989,6 +991,9 @@
+ static bool __is_pointer_value(bool allow_ptr_leaks,
+ 			       const struct bpf_reg_state *reg)
+ {
++	/* A borrowed socket must not escape as an untyped address. */
++	if (reg->type == PTR_TO_SOCKET)
++		return true;
+ 	if (allow_ptr_leaks)
+ 		return false;
+ 
+@@ -1093,6 +1098,36 @@
+  * if t==write && value_regno==-1, some unknown value is stored into memory
+  * if t==read && value_regno==-1, don't care what we read from memory
+  */
++/* Borrowed socket pointers are never adjusted or reconstructed from scalars. */
++static bool bpf_sock_reg_is_unmodified(const struct bpf_reg_state *reg)
++{
++	return reg->type == PTR_TO_SOCKET && !reg->off &&
++		tnum_is_const(reg->var_off) && !reg->var_off.value &&
++		!reg->smin_value && !reg->smax_value &&
++		!reg->umin_value && !reg->umax_value;
++}
++
++static int check_sock_access(struct bpf_verifier_env *env, int insn_idx,
++			     u32 regno, int off, int size,
++			     enum bpf_access_type type)
++{
++	struct bpf_reg_state *reg = &env->cur_state.regs[regno];
++	struct bpf_insn_access_aux info = {};
++
++	if (!bpf_sock_reg_is_unmodified(reg) ||
++	    !bpf_sock_is_valid_access(off, size, type, &info)) {
++		verbose("R%d invalid socket access off=%d size=%d\n", regno, off, size);
++		return -EACCES;
++	}
++	env->insn_aux_data[insn_idx].ctx_field_size = info.ctx_field_size;
++	return 0;
++}
++
++static bool bpf_ptr_needs_conversion(enum bpf_reg_type type)
++{
++	return type == PTR_TO_CTX || type == PTR_TO_SOCKET;
++}
++
+ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regno, int off,
+ 			    int bpf_size, enum bpf_access_type t,
+ 			    int value_regno)
+@@ -1104,6 +1139,9 @@
+ 	size = bpf_size_to_bytes(bpf_size);
+ 	if (size < 0)
+ 		return size;
++
++	if (reg->type == PTR_TO_SOCKET && !bpf_sock_reg_is_unmodified(reg))
++		return -EACCES;
+ 
+ 	/* alignment checks will add in reg->off themselves */
+ 	err = check_ptr_alignment(env, reg, off, size);
+@@ -1160,6 +1198,10 @@
+ 			state->regs[value_regno].type = reg_type;
+ 		}
+ 
++	} else if (reg->type == PTR_TO_SOCKET) {
++		err = check_sock_access(env, insn_idx, regno, off, size, t);
++		if (!err && t == BPF_READ && value_regno >= 0)
++			mark_reg_unknown(state->regs, value_regno);
+ 	} else if (reg->type == PTR_TO_STACK) {
+ 		/* stack accesses must be at a fixed offset, so that we can
+ 		 * determine what type of data were returned.
+@@ -1398,6 +1440,12 @@
+ 		expected_type = PTR_TO_CTX;
+ 		if (type != expected_type)
+ 			goto err_type;
++	} else if (arg_type == ARG_PTR_TO_SOCKET) {
++		expected_type = PTR_TO_SOCKET;
++		if (type != expected_type)
++			goto err_type;
++		if (!bpf_sock_reg_is_unmodified(reg))
++			return -EACCES;
+ 	} else if (arg_type == ARG_PTR_TO_MEM ||
+ 		   arg_type == ARG_PTR_TO_UNINIT_MEM) {
+ 		expected_type = PTR_TO_STACK;
+@@ -1845,6 +1893,10 @@
+ 				dst);
+ 		return -EACCES;
+ 	}
++	if (ptr_reg->type == PTR_TO_SOCKET) {
++		verbose("socket pointer arithmetic is prohibited\n");
++		return -EACCES;
++	}
+ 	if (ptr_reg->type == PTR_TO_PACKET_END) {
+ 		if (!env->allow_ptr_leaks)
+ 			verbose("R%d pointer arithmetic on PTR_TO_PACKET_END prohibited\n",
+@@ -2792,6 +2844,15 @@
+ 
+ 	dst_reg = &regs[insn->dst_reg];
+ 
++
++    if (BPF_SRC(insn->code) == BPF_K && insn->imm == 0 &&
++        (opcode == BPF_JEQ || opcode == BPF_JNE) && dst_reg->type == PTR_TO_SOCKET) {
++        /* This type is supplied only by a holding, non-NULL hook context. */
++        if (opcode == BPF_JNE)
++            *insn_idx += insn->off;
++        return 0;
++    }
++
+ 	/* detect if R == 0 where R was initialized to zero earlier */
+ 	if (BPF_SRC(insn->code) == BPF_K &&
+ 	    (opcode == BPF_JEQ || opcode == BPF_JNE) &&
+@@ -3289,6 +3350,11 @@
+ 		/* explored state can't have used this */
+ 		return true;
+ 	if (rcur->type == NOT_INIT)
++		return false;
++	/* A path checked as an untyped scalar must never prune a path
++	 * carrying a socket: its helper/leak restrictions differ.
++	 */
++	if (rcur->type == PTR_TO_SOCKET && rold->type != PTR_TO_SOCKET)
+ 		return false;
+ 	switch (rold->type) {
+ 	case SCALAR_VALUE:
+@@ -3626,8 +3692,8 @@
+ 				*prev_src_type = src_reg_type;
+ 
+ 			} else if (src_reg_type != *prev_src_type &&
+-				   (src_reg_type == PTR_TO_CTX ||
+-				    *prev_src_type == PTR_TO_CTX)) {
++				   (bpf_ptr_needs_conversion(src_reg_type) ||
++				    bpf_ptr_needs_conversion(*prev_src_type))) {
+ 				/* ABuser program is trying to use the same insn
+ 				 * dst_reg = *(u32*) (src_reg + off)
+ 				 * with different pointer types:
+@@ -3673,8 +3739,8 @@
+ 			if (*prev_dst_type == NOT_INIT) {
+ 				*prev_dst_type = dst_reg_type;
+ 			} else if (dst_reg_type != *prev_dst_type &&
+-				   (dst_reg_type == PTR_TO_CTX ||
+-				    *prev_dst_type == PTR_TO_CTX)) {
++				   (bpf_ptr_needs_conversion(dst_reg_type) ||
++				    bpf_ptr_needs_conversion(*prev_dst_type))) {
+ 				verbose("same insn cannot be used with different pointers\n");
+ 				return -EINVAL;
+ 			}
+@@ -4027,7 +4093,10 @@
+ 	struct bpf_prog *new_prog;
+ 	enum bpf_access_type type;
+ 	bool is_narrower_load;
+-	u32 target_size;
++	u32 target_size, original_offset;
++	enum bpf_reg_type ptr_type;
++	u32 (*convert_access)(enum bpf_access_type, const struct bpf_insn *,
++		struct bpf_insn *, struct bpf_prog *, u32 *);
+ 
+ 	if (ops->gen_prologue) {
+ 		cnt = ops->gen_prologue(insn_buf, env->seen_direct_write,
+@@ -4045,8 +4114,6 @@
+ 		}
+ 	}
+ 
+-	if (!ops->convert_ctx_access)
+-		return 0;
+ 
+ 	insn = env->prog->insnsi + delta;
+ 
+@@ -4092,8 +4159,17 @@
+ 			continue;
+ 		}
+ 
+-		if (env->insn_aux_data[i + delta].ptr_type != PTR_TO_CTX)
+-			continue;
++
++        ptr_type = env->insn_aux_data[i + delta].ptr_type;
++        if (ptr_type == PTR_TO_SOCKET) {
++            convert_access = bpf_sock_convert_ctx_access;
++        } else if (ptr_type == PTR_TO_CTX && ops->convert_ctx_access) {
++            convert_access = ops->convert_ctx_access;
++        } else {
++            continue;
++        }
++        original_offset = insn->off;
++
+ 
+ 		ctx_field_size = env->insn_aux_data[i + delta].ctx_field_size;
+ 		size = BPF_LDST_BYTES(insn);
+@@ -4124,7 +4200,7 @@
+ 		}
+ 
+ 		target_size = 0;
+-		cnt = ops->convert_ctx_access(type, insn, insn_buf, env->prog,
++		cnt = convert_access(type, insn, insn_buf, env->prog,
+ 					      &target_size);
+ 		if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf) ||
+ 		    (ctx_field_size && !target_size)) {
+@@ -4132,7 +4208,22 @@
+ 			return -EINVAL;
+ 		}
+ 
+-		if (is_narrower_load && size < target_size) {
++
++        if (is_narrower_load && ptr_type == PTR_TO_SOCKET) {
++            u32 byte_offset = original_offset & 3;
++#ifdef __LITTLE_ENDIAN
++            u32 shift = byte_offset * 8;
++#else
++            u32 shift = (4 - size - byte_offset) * 8;
++#endif
++            /* Translate the logical 32-bit field, including zero padding of
++             * 8/16-bit kernel members, before selecting its requested bytes.
++             */
++            if (shift)
++                insn_buf[cnt++] = BPF_ALU32_IMM(BPF_RSH, insn->dst_reg, shift);
++            insn_buf[cnt++] = BPF_ALU32_IMM(BPF_AND, insn->dst_reg, (1U << (size * 8)) - 1);
++        } else if (is_narrower_load && size < target_size) {
++
+ 			if (ctx_field_size <= 4)
+ 				insn_buf[cnt++] = BPF_ALU32_IMM(BPF_AND, insn->dst_reg,
+ 								(1 << size * 8) - 1);

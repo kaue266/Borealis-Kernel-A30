@@ -1,0 +1,399 @@
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -89,6 +89,8 @@
+ 	BPF_OBJ_GET_INFO_BY_FD,
+ 	BPF_PROG_QUERY,
+ 	BPF_BTF_LOAD = 18,
++	BPF_MAP_LOOKUP_BATCH = 24,
++	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
+ };
+ 
+ enum bpf_map_type {
+@@ -234,6 +236,19 @@
+ #define BPF_F_WRONLY		(1U << 4)
+ 
+ union bpf_attr {
++
++    struct { /* Standard batch lookup ABI; pointers aligned on ARM32 too. */
++        __aligned_u64 in_batch;
++        __aligned_u64 out_batch;
++        __aligned_u64 keys;
++        __aligned_u64 values;
++        __u32 count;
++        __u32 map_fd;
++        __u64 elem_flags;
++        __u64 flags;
++    } batch;
++
++
+ 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
+ 		__u32	map_type;	/* one of enum bpf_map_type */
+ 		__u32	key_size;	/* size of key in bytes */
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -29,6 +29,12 @@
+ 	void (*map_free)(struct bpf_map *map);
+ 	int (*map_get_next_key)(struct bpf_map *map, void *key, void *next_key);
+ 
++
++    int (*map_lookup_batch)(struct bpf_map *map, const union bpf_attr *attr,
++                           union bpf_attr __user *uattr);
++    int (*map_lookup_and_delete_batch)(struct bpf_map *map, const union bpf_attr *attr,
++                                      union bpf_attr __user *uattr);
++
+ 	/* funcs callable from userspace and from eBPF programs */
+ 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
+ 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
+@@ -40,6 +46,10 @@
+ 	void (*map_fd_put_ptr)(void *ptr);
+ 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
+ };
++
++
++int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++                          union bpf_attr __user *uattr);
+ 
+ struct bpf_map {
+ 	atomic_t refcnt;
+--- a/kernel/bpf/hashtab.c
++++ b/kernel/bpf/hashtab.c
+@@ -1118,7 +1118,167 @@
+ 	kfree(htab);
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Bounded hash-map batch lookup for R24U, derived from Linux commit
++ * 057996380a42 (Brian Vazquez and the Linux BPF contributors).
++ * LRU frees follow the R24U lock ordering: release the bucket lock first.
++ * Map-value BPF spin locks are not implemented here; nonzero flags fail.
++ */
++static int htab_map_batch(struct bpf_map *map, const union bpf_attr *attr,
++			  union bpf_attr __user *uattr, bool do_delete)
++{
++	struct bpf_htab *htab = container_of(map, struct bpf_htab, map);
++	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
++	void __user *uvalues = u64_to_user_ptr(attr->batch.values);
++	void __user *ubatch = u64_to_user_ptr(attr->batch.in_batch);
++	void *keys = NULL, *values = NULL;
++	struct htab_elem **deleted = NULL, *element;
++	struct hlist_nulls_node *node, *next;
++	size_t value_size, cpu_stride;
++	u32 bucket = 0, total = 0, capacity = 5, entries, freed, i;
++	u32 max_count = attr->batch.count, key_size = map->key_size;
++	bool percpu = htab_is_percpu(htab), lru = htab_is_lru(htab);
++	unsigned long irq_flags;
++	int ret = 0;
++
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	if (!max_count)
++		return 0;
++	if (put_user(0, &uattr->batch.count))
++		return -EFAULT;
++	if (ubatch && copy_from_user(&bucket, ubatch, sizeof(bucket)))
++		return -EFAULT;
++	if (bucket >= htab->n_buckets)
++		return -ENOENT;
++	cpu_stride = round_up((size_t)map->value_size, 8);
++	if (percpu && cpu_stride > SIZE_MAX / num_possible_cpus())
++		return -E2BIG;
++	value_size = percpu ? cpu_stride * num_possible_cpus() : map->value_size;
++	if (!key_size || !value_size || max_count > SIZE_MAX / key_size ||
++	    max_count > SIZE_MAX / value_size)
++		return -E2BIG;
++
++allocate:
++	keys = kmalloc_array(capacity, key_size, GFP_USER | __GFP_NOWARN);
++	values = kmalloc_array(capacity, value_size, GFP_USER | __GFP_NOWARN);
++	if (do_delete && lru)
++		deleted = kmalloc_array(capacity, sizeof(*deleted), GFP_USER | __GFP_NOWARN);
++	if (!keys || !values || (do_delete && lru && !deleted)) {
++		ret = -ENOMEM;
++		goto finish;
++	}
++again:
++	preempt_disable();
++	this_cpu_inc(bpf_prog_active);
++	rcu_read_lock();
++	raw_spin_lock_irqsave(&htab->buckets[bucket].lock, irq_flags);
++	entries = 0;
++	hlist_nulls_for_each_entry_rcu(element, node,
++			&htab->buckets[bucket].head, hash_node)
++		entries++;
++	if (entries > max_count - total) {
++		ret = total ? 0 : -ENOSPC;
++		goto unlock_finish;
++	}
++	if (entries > capacity) {
++		capacity = entries;
++		raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++		rcu_read_unlock();
++		this_cpu_dec(bpf_prog_active);
++		preempt_enable();
++		kfree(keys);
++		kfree(values);
++		kfree(deleted);
++		deleted = NULL;
++		goto allocate;
++	}
++	i = 0;
++	freed = 0;
++	/* Save the next node before free_htab_elem reuses the element storage. */
++	node = rcu_dereference_raw(htab->buckets[bucket].head.first);
++	while (!is_a_nulls(node)) {
++		element = hlist_nulls_entry(node, struct htab_elem, hash_node);
++		next = rcu_dereference_raw(node->next);
++		memcpy(keys + (size_t)i * key_size, element->key, key_size);
++		if (percpu) {
++			void __percpu *ptr = htab_elem_get_ptr(element, key_size);
++			size_t offset = 0;
++			int cpu;
++			for_each_possible_cpu(cpu) {
++				bpf_long_memcpy(values + (size_t)i * value_size + offset,
++						per_cpu_ptr(ptr, cpu), cpu_stride);
++				offset += cpu_stride;
++			}
++		} else {
++			memcpy(values + (size_t)i * value_size,
++			       element->key + round_up(key_size, 8), value_size);
++		}
++		if (do_delete) {
++			hlist_nulls_del_rcu(&element->hash_node);
++			if (lru)
++				deleted[freed++] = element;
++			else
++				free_htab_elem(htab, element);
++		}
++		i++;
++		node = next;
++	}
++	raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++	for (i = 0; i < freed; i++)
++		bpf_lru_push_free(&htab->lru, &deleted[i]->lru_node);
++	rcu_read_unlock();
++	this_cpu_dec(bpf_prog_active);
++	preempt_enable();
++	if (entries && (copy_to_user(ukeys + (size_t)total * key_size, keys,
++				    (size_t)entries * key_size) ||
++			copy_to_user(uvalues + (size_t)total * value_size, values,
++				     (size_t)entries * value_size))) {
++		ret = -EFAULT;
++		goto finish;
++	}
++	total += entries;
++	bucket++;
++	if (bucket >= htab->n_buckets) {
++		ret = -ENOENT;
++		goto finish;
++	}
++	if (total < max_count)
++		goto again;
++	goto finish;
++
++unlock_finish:
++	raw_spin_unlock_irqrestore(&htab->buckets[bucket].lock, irq_flags);
++	rcu_read_unlock();
++	this_cpu_dec(bpf_prog_active);
++	preempt_enable();
++finish:
++	/* EFAULT can occur after deletions: count is not a trustworthy result. */
++	if (ret != -EFAULT &&
++	    (copy_to_user(u64_to_user_ptr(attr->batch.out_batch), &bucket, sizeof(bucket)) ||
++	     put_user(total, &uattr->batch.count)))
++		ret = -EFAULT;
++	kfree(keys);
++	kfree(values);
++	kfree(deleted);
++	return ret;
++}
++
++static int htab_map_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++				 union bpf_attr __user *uattr)
++{
++	return htab_map_batch(map, attr, uattr, false);
++}
++
++static int htab_map_lookup_and_delete_batch(struct bpf_map *map,
++		const union bpf_attr *attr, union bpf_attr __user *uattr)
++{
++	return htab_map_batch(map, attr, uattr, true);
++}
++
+ const struct bpf_map_ops htab_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1129,6 +1289,8 @@
+ };
+ 
+ const struct bpf_map_ops htab_lru_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1211,6 +1373,8 @@
+ }
+ 
+ const struct bpf_map_ops htab_percpu_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+@@ -1220,6 +1384,8 @@
+ };
+ 
+ const struct bpf_map_ops htab_lru_percpu_map_ops = {
++	.map_lookup_batch = htab_map_lookup_batch,
++	.map_lookup_and_delete_batch = htab_map_lookup_and_delete_batch,
+ 	.map_alloc = htab_map_alloc,
+ 	.map_free = htab_map_free,
+ 	.map_get_next_key = htab_map_get_next_key,
+--- a/kernel/bpf/arraymap.c
++++ b/kernel/bpf/arraymap.c
+@@ -333,6 +333,7 @@
+ }
+ 
+ const struct bpf_map_ops array_map_ops = {
++	.map_lookup_batch = bpf_array_lookup_batch,
+ 	.map_alloc = array_map_alloc,
+ 	.map_free = array_map_free,
+ 	.map_get_next_key = array_map_get_next_key,
+@@ -343,6 +344,7 @@
+ };
+ 
+ const struct bpf_map_ops percpu_array_map_ops = {
++	.map_lookup_batch = bpf_array_lookup_batch,
+ 	.map_alloc = array_map_alloc,
+ 	.map_free = array_map_free,
+ 	.map_get_next_key = array_map_get_next_key,
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -1763,6 +1763,113 @@
+ 	return btf_new_fd(attr);
+ }
+ 
++/* SPDX-License-Identifier: GPL-2.0
++ * Array batch lookup adapted from Linux commit cb4d03ab499d.
++ * Keys and values have separate allocations: this includes the fix for the
++ * mixed-stride buffer corruption described in Linux commit 953824e508b2.
++ */
++int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
++			  union bpf_attr __user *uattr)
++{
++	void __user *ukeys = u64_to_user_ptr(attr->batch.keys);
++	void __user *uvalues = u64_to_user_ptr(attr->batch.values);
++	void __user *in = u64_to_user_ptr(attr->batch.in_batch);
++	void *value = NULL, *ptr;
++	u32 key = 0, last = 0, count = 0, limit = attr->batch.count;
++	size_t stride = round_up((size_t)map->value_size, 8), value_size;
++	bool percpu = map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
++	int ret = 0;
++
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	if (!limit)
++		return 0;
++	if (put_user(0, &uattr->batch.count))
++		return -EFAULT;
++	if (percpu && stride > SIZE_MAX / num_possible_cpus())
++		return -E2BIG;
++	value_size = percpu ? stride * num_possible_cpus() : map->value_size;
++	if (!value_size || limit > SIZE_MAX / value_size ||
++	    limit > SIZE_MAX / sizeof(key))
++		return -E2BIG;
++	if (in) {
++		if (copy_from_user(&key, in, sizeof(key)))
++			return -EFAULT;
++		/* Array get_next_key restarts for a non-existent key. */
++		key = key >= map->max_entries ? 0 : key + 1;
++	}
++	value = kmalloc(value_size, GFP_USER | __GFP_NOWARN);
++	if (!value)
++		return -ENOMEM;
++	while (count < limit) {
++		if (key >= map->max_entries) {
++			ret = -ENOENT;
++			break;
++		}
++		if (percpu) {
++			ret = bpf_percpu_array_copy(map, &key, value);
++		} else {
++			rcu_read_lock();
++			ptr = map->ops->map_lookup_elem(map, &key);
++			if (ptr)
++				memcpy(value, ptr, value_size);
++			rcu_read_unlock();
++			ret = ptr ? 0 : -ENOENT;
++		}
++		if (ret)
++			break;
++		if (copy_to_user(ukeys + (size_t)count * sizeof(key), &key, sizeof(key)) ||
++		    copy_to_user(uvalues + (size_t)count * value_size, value, value_size)) {
++			ret = -EFAULT;
++			break;
++		}
++		last = key++;
++		count++;
++	}
++	if (ret != -EFAULT &&
++	    (put_user(count, &uattr->batch.count) ||
++	     (count && copy_to_user(u64_to_user_ptr(attr->batch.out_batch), &last, sizeof(last)))))
++		ret = -EFAULT;
++	kfree(value);
++	return ret;
++}
++
++/* The outer bpf syscall retains security_bpf and unprivileged-BPF checks. */
++#define BPF_MAP_BATCH_LAST_FIELD batch.flags
++
++static int bpf_map_do_batch(const union bpf_attr *attr,
++			  union bpf_attr __user *uattr, int command)
++{
++	struct fd file;
++	struct bpf_map *map;
++	int ret;
++
++	if (CHECK_ATTR(BPF_MAP_BATCH))
++		return -EINVAL;
++	if (attr->batch.flags || attr->batch.elem_flags)
++		return -EINVAL;
++	file = fdget(attr->batch.map_fd);
++	map = __bpf_map_get(file);
++	/* In R24U __bpf_map_get releases a non-map descriptor on error. */
++	if (IS_ERR(map))
++		return PTR_ERR(map);
++	if (!(file.file->f_mode & FMODE_CAN_READ) ||
++	    (command == BPF_MAP_LOOKUP_AND_DELETE_BATCH &&
++	     !(file.file->f_mode & FMODE_CAN_WRITE))) {
++		ret = -EPERM;
++		goto out;
++	}
++	if (command == BPF_MAP_LOOKUP_BATCH)
++		ret = map->ops->map_lookup_batch ?
++			map->ops->map_lookup_batch(map, attr, uattr) : -ENOTSUPP;
++	else
++		ret = map->ops->map_lookup_and_delete_batch ?
++			map->ops->map_lookup_and_delete_batch(map, attr, uattr) : -ENOTSUPP;
++out:
++	fdput(file);
++	return ret;
++}
++
+ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
+ {
+ 	union bpf_attr attr;
+@@ -1852,6 +1959,10 @@
+ 	case BPF_OBJ_GET_INFO_BY_FD:
+ 		err = bpf_obj_get_info_by_fd(&attr, uattr);
+ 		break;
++	case BPF_MAP_LOOKUP_BATCH:
++	case BPF_MAP_LOOKUP_AND_DELETE_BATCH:
++		err = bpf_map_do_batch(&attr, uattr, cmd);
++		break;
+ 	case BPF_BTF_LOAD:
+ 		err = bpf_btf_load(&attr);
+ 		break;

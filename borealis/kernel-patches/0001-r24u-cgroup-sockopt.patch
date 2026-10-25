@@ -1,0 +1,641 @@
+--- a/include/uapi/linux/bpf.h
++++ b/include/uapi/linux/bpf.h
+@@ -128,6 +128,7 @@
+ 	BPF_PROG_TYPE_SK_SKB,
+ 	BPF_PROG_TYPE_CGROUP_DEVICE,
+ 	BPF_PROG_TYPE_CGROUP_SOCK_ADDR = 18,
++	BPF_PROG_TYPE_CGROUP_SOCKOPT = 25,
+ };
+ 
+ enum bpf_attach_type {
+@@ -148,6 +149,8 @@
+ 	BPF_CGROUP_UDP6_SENDMSG,
+ 	BPF_CGROUP_UDP4_RECVMSG = 19,
+ 	BPF_CGROUP_UDP6_RECVMSG,
++	BPF_CGROUP_GETSOCKOPT = 21,
++	BPF_CGROUP_SETSOCKOPT,
+ 	__MAX_BPF_ATTACH_TYPE
+ };
+ 
+@@ -1066,4 +1069,19 @@
+ 	__u32 minor;
+ };
+ 
++
++/* Socket-option context uses the standard 64-bit-aligned BPF pointer ABI. */
++#define __bpf_md_ptr(type, name) \
++union { type name; __u64 :64; } __attribute__((aligned(8)))
++
++struct bpf_sockopt {
++    __bpf_md_ptr(struct bpf_sock *, sk);
++    __bpf_md_ptr(void *, optval);
++    __bpf_md_ptr(void *, optval_end);
++    __s32 level;
++    __s32 optname;
++    __s32 optlen;
++    __s32 retval;
++};
++
+ #endif /* _UAPI__LINUX_BPF_H__ */
+--- a/include/linux/filter.h
++++ b/include/linux/filter.h
+@@ -1033,4 +1033,15 @@
+ 	};
+ };
+ 
++
++struct bpf_sockopt_kern {
++    struct sock *sk;
++    u8 *optval;
++    u8 *optval_end;
++    s32 level;
++    s32 optname;
++    s32 optlen;
++    s32 retval;
++};
++
+ #endif /* __LINUX_FILTER_H__ */
+--- a/include/linux/bpf.h
++++ b/include/linux/bpf.h
+@@ -285,6 +285,7 @@
+ struct bpf_prog_array *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags);
+ void bpf_prog_array_free(struct bpf_prog_array __rcu *progs);
+ int bpf_prog_array_length(struct bpf_prog_array __rcu *progs);
++bool bpf_prog_array_is_empty(struct bpf_prog_array *progs);
+ int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *progs,
+ 				__u32 __user *prog_ids, u32 cnt);
+ 				
+--- a/include/linux/bpf_types.h
++++ b/include/linux/bpf_types.h
+@@ -8,6 +8,9 @@
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SKB, cg_skb)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK, cg_sock)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCK_ADDR, cg_sock_addr)
++#ifdef CONFIG_CGROUP_BPF
++BPF_PROG_TYPE(BPF_PROG_TYPE_CGROUP_SOCKOPT, cg_sockopt)
++#endif
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_IN, lwt_inout)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_OUT, lwt_inout)
+ BPF_PROG_TYPE(BPF_PROG_TYPE_LWT_XMIT, lwt_xmit)
+--- a/kernel/bpf/Makefile
++++ b/kernel/bpf/Makefile
+@@ -15,6 +15,9 @@
+ obj-$(CONFIG_BPF_SYSCALL) += stackmap.o
+ endif
+ obj-$(CONFIG_CGROUP_BPF) += cgroup.o
++ifeq ($(CONFIG_NET),y)
++obj-$(CONFIG_CGROUP_BPF) += sockopt.o
++endif
+ 
+ # various version of gcc have a LTO bug where the &&labels used in the
+ # BPF interpreter can cause linker errors when spread incorrectly over
+--- a/kernel/bpf/core.c
++++ b/kernel/bpf/core.c
+@@ -1423,6 +1423,20 @@
+ 	kfree_rcu(progs, rcu);
+ }
+ 
++
++bool bpf_prog_array_is_empty(struct bpf_prog_array *progs)
++{
++    struct bpf_prog **entry;
++    struct bpf_prog *prog;
++
++    if (!progs)
++        return true;
++    for (entry = progs->progs; (prog = READ_ONCE(*entry)); entry++)
++        if (prog != &dummy_bpf_prog.prog)
++            return false;
++    return true;
++}
++
+ void bpf_prog_array_delete_safe(struct bpf_prog_array __rcu *progs,
+ 				struct bpf_prog *old_prog)
+ {
+--- a/include/linux/bpf-cgroup.h
++++ b/include/linux/bpf-cgroup.h
+@@ -193,6 +193,20 @@
+ 									      \
+ 	__ret;								      \
+ })
++
++int __cgroup_bpf_run_filter_setsockopt(struct sock *sk, int *level,
++        int *optname, char __user *optval, int *optlen, char **kernel_optval);
++int __cgroup_bpf_run_filter_getsockopt(struct sock *sk, int level,
++        int optname, char __user *optval, int __user *optlen,
++        int max_optlen, int retval);
++
++#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) \
++    __cgroup_bpf_run_filter_setsockopt(sk, level, name, value, length, kvalue)
++#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) \
++    __cgroup_bpf_run_filter_getsockopt(sk, level, name, value, length, maxlen, ret)
++#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) \
++({ int __length = 0; if (cgroup_bpf_enabled) get_user(__length, length); __length; })
++
+ #else
+ 
+ struct cgroup_bpf {};
+@@ -219,6 +233,11 @@
+ #define BPF_CGROUP_RUN_PROG_SOCK_OPS(sock_ops) ({ 0; })
+ #define BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type,major,minor,access) ({ 0; })
+ 
++
++#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) (0)
++#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) (ret)
++#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) (0)
++
+ #endif /* CONFIG_CGROUP_BPF */
+ 
+ #endif /* _BPF_CGROUP_H */
+--- a/kernel/bpf/syscall.c
++++ b/kernel/bpf/syscall.c
+@@ -1070,6 +1070,9 @@
+ 		default:
+ 			return -EINVAL;
+ 		}
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
++        return expected_attach_type == BPF_CGROUP_GETSOCKOPT ||
++               expected_attach_type == BPF_CGROUP_SETSOCKOPT ? 0 : -EINVAL;
+ 	default:
+ 		return 0;
+ 	}
+@@ -1081,6 +1084,7 @@
+ 	switch (prog->type) {
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+ 		return attach_type == prog->expected_attach_type ? 0 : -EINVAL;
+ 	default:
+ 		return 0;
+@@ -1314,6 +1318,10 @@
+ 	case BPF_CGROUP_SOCK_OPS:
+ 		ptype = BPF_PROG_TYPE_SOCK_OPS;
+ 		break;
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
++        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
++        break;
+ 	case BPF_CGROUP_DEVICE:
+ 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
+ 		break;
+@@ -1387,6 +1395,10 @@
+ 	case BPF_CGROUP_SOCK_OPS:
+ 		ptype = BPF_PROG_TYPE_SOCK_OPS;
+ 		break;
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
++        ptype = BPF_PROG_TYPE_CGROUP_SOCKOPT;
++        break;
+ 	case BPF_CGROUP_DEVICE:
+ 		ptype = BPF_PROG_TYPE_CGROUP_DEVICE;
+ 		break;
+@@ -1443,6 +1455,8 @@
+ 	case BPF_CGROUP_UDP4_RECVMSG:
+ 	case BPF_CGROUP_UDP6_RECVMSG:
+ 	case BPF_CGROUP_SOCK_OPS:
++	case BPF_CGROUP_GETSOCKOPT:
++	case BPF_CGROUP_SETSOCKOPT:
+ 	case BPF_CGROUP_DEVICE:
+ 		break;
+ 	default:
+--- a/kernel/bpf/verifier.c
++++ b/kernel/bpf/verifier.c
+@@ -905,6 +905,10 @@
+ 
+ 		env->seen_direct_write = true;
+ 		return true;
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
++        if (t == BPF_WRITE)
++            env->seen_direct_write = true;
++        return true;
+ 	default:
+ 		return false;
+ 	}
+@@ -2997,6 +3001,7 @@
+ 	case BPF_PROG_TYPE_CGROUP_SKB:
+ 	case BPF_PROG_TYPE_CGROUP_SOCK:
+ 	case BPF_PROG_TYPE_SOCK_OPS:
++	case BPF_PROG_TYPE_CGROUP_SOCKOPT:
+ 	case BPF_PROG_TYPE_CGROUP_DEVICE:
+ 		break;
+ 	default:
+--- a/net/socket.c
++++ b/net/socket.c
+@@ -58,6 +58,7 @@
+  *	Based upon Swansea University Computer Society NET3.039
+  */
+ 
++#include <linux/bpf-cgroup.h>
+ #include <linux/mm.h>
+ #include <linux/socket.h>
+ #include <linux/file.h>
+@@ -1761,6 +1762,8 @@
+ SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		char __user *, optval, int, optlen)
+ {
++	mm_segment_t oldfs = get_fs();
++	char *kernel_optval = NULL;
+ 	int err, fput_needed;
+ 	struct socket *sock;
+ 
+@@ -1772,6 +1775,19 @@
+ 		err = security_socket_setsockopt(sock, level, optname);
+ 		if (err)
+ 			goto out_put;
++
++        err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
++                optval, &optlen, &kernel_optval);
++        if (err < 0)
++            goto borealis_sockopt_put;
++        if (err > 0) {
++            err = 0;
++            goto borealis_sockopt_put;
++        }
++        if (kernel_optval) {
++            set_fs(KERNEL_DS);
++            optval = (char __user __force *)kernel_optval;
++        }
+ 
+ 		if (level == SOL_SOCKET)
+ 			err =
+@@ -1781,6 +1797,12 @@
+ 			err =
+ 			    sock->ops->setsockopt(sock, level, optname, optval,
+ 						  optlen);
++borealis_sockopt_put:
++        if (kernel_optval) {
++            set_fs(oldfs);
++            kfree(kernel_optval);
++        }
++
+ out_put:
+ 		fput_light(sock->file, fput_needed);
+ 	}
+@@ -1795,6 +1817,7 @@
+ SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		char __user *, optval, int __user *, optlen)
+ {
++	int max_optlen;
+ 	int err, fput_needed;
+ 	struct socket *sock;
+ 
+@@ -1804,6 +1827,7 @@
+ 		if (err)
+ 			goto out_put;
+ 
++        max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
+ 		if (level == SOL_SOCKET)
+ 			err =
+ 			    sock_getsockopt(sock, level, optname, optval,
+@@ -1812,6 +1836,9 @@
+ 			err =
+ 			    sock->ops->getsockopt(sock, level, optname, optval,
+ 						  optlen);
++        err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
++                optval, optlen, max_optlen, err);
++
+ out_put:
+ 		fput_light(sock->file, fput_needed);
+ 	}
+--- a/net/compat.c
++++ b/net/compat.c
+@@ -11,6 +11,7 @@
+  * Copyright (C) 2000,2001	Andi Kleen, SuSE Labs
+  */
+ 
++#include <linux/bpf-cgroup.h>
+ #include <linux/kernel.h>
+ #include <linux/gfp.h>
+ #include <linux/fs.h>
+@@ -369,6 +370,9 @@
+ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
+ 		       char __user *, optval, unsigned int, optlen)
+ {
++	mm_segment_t oldfs = get_fs();
++	char *kernel_optval = NULL;
++	int filtered_optlen;
+ 	int err;
+ 	struct socket *sock = sockfd_lookup(fd, &err);
+ 
+@@ -378,6 +382,27 @@
+ 			sockfd_put(sock);
+ 			return err;
+ 		}
++
++        filtered_optlen = (int)optlen;
++        if (filtered_optlen < 0) {
++            err = -EINVAL;
++            goto borealis_sockopt_put;
++        }
++
++        err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
++                optval, &filtered_optlen, &kernel_optval);
++        if (err < 0)
++            goto borealis_sockopt_put;
++        if (err > 0) {
++            err = 0;
++            goto borealis_sockopt_put;
++        }
++        if (kernel_optval) {
++            set_fs(KERNEL_DS);
++            optval = (char __user __force *)kernel_optval;
++        }
++
++        optlen = filtered_optlen;
+ 
+ 		if (level == SOL_SOCKET)
+ 			err = compat_sock_setsockopt(sock, level,
+@@ -388,6 +413,12 @@
+ 		else
+ 			err = sock->ops->setsockopt(sock, level,
+ 					optname, optval, optlen);
++borealis_sockopt_put:
++        if (kernel_optval) {
++            set_fs(oldfs);
++            kfree(kernel_optval);
++        }
++
+ 		sockfd_put(sock);
+ 	}
+ 	return err;
+@@ -493,6 +524,7 @@
+ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
+ 		       char __user *, optval, int __user *, optlen)
+ {
++	int max_optlen;
+ 	int err;
+ 	struct socket *sock = sockfd_lookup(fd, &err);
+ 
+@@ -503,6 +535,7 @@
+ 			return err;
+ 		}
+ 
++        max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
+ 		if (level == SOL_SOCKET)
+ 			err = compat_sock_getsockopt(sock, level,
+ 					optname, optval, optlen);
+@@ -512,6 +545,9 @@
+ 		else
+ 			err = sock->ops->getsockopt(sock, level,
+ 					optname, optval, optlen);
++        err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
++                optval, optlen, max_optlen, err);
++
+ 		sockfd_put(sock);
+ 	}
+ 	return err;
+--- /dev/null
++++ b/kernel/bpf/sockopt.c
+@@ -0,0 +1,252 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Cgroup socket-option hooks for the R24U backport.
++ * Derived from Linux commit 0d01da6afc54 and the Linux v5.10 implementation
++ * by Stanislav Fomichev and the Linux BPF contributors.
++ * Context validation rejects unsupported socket-pointer access; adding an
++ * enum alone must never grant unchecked access to kernel memory.
++ */
++#include <linux/bpf.h>
++#include <linux/bpf-cgroup.h>
++#include <linux/cgroup.h>
++#include <linux/capability.h>
++#include <linux/filter.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <net/sock.h>
++
++static bool sockopt_prog_array_empty(struct cgroup *cgrp,
++				    enum bpf_attach_type type)
++{
++	struct bpf_prog_array *array;
++	bool empty;
++
++	rcu_read_lock();
++	array = rcu_dereference(cgrp->bpf.effective[type]);
++	empty = bpf_prog_array_is_empty(array);
++	rcu_read_unlock();
++	return empty;
++}
++
++static int sockopt_alloc_buf(struct bpf_sockopt_kern *ctx, int length)
++{
++	if (length < 0)
++		return -EINVAL;
++	length = min_t(int, length, PAGE_SIZE);
++	ctx->optval = kzalloc(max_t(int, length, 1), GFP_USER);
++	if (!ctx->optval)
++		return -ENOMEM;
++	ctx->optval_end = ctx->optval + length;
++	return length;
++}
++
++int __cgroup_bpf_run_filter_setsockopt(struct sock *sk, int *level,
++		int *optname, char __user *optval, int *optlen,
++		char **kernel_optval)
++{
++	struct bpf_sockopt_kern ctx = { .sk = sk, .level = *level,
++		.optname = *optname };
++	struct cgroup *cgrp;
++	int ret, capacity;
++
++	if (!sk || !cgroup_bpf_enabled)
++		return 0;
++	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
++	if (sockopt_prog_array_empty(cgrp, BPF_CGROUP_SETSOCKOPT))
++		return 0;
++	if (*optlen < 0)
++		return -EINVAL;
++
++	capacity = sockopt_alloc_buf(&ctx, max_t(int, *optlen, 16));
++	if (capacity < 0)
++		return capacity;
++	ctx.optlen = *optlen;
++	if (copy_from_user(ctx.optval, optval, min(*optlen, capacity))) {
++		ret = -EFAULT;
++		goto out;
++	}
++	lock_sock(sk);
++	ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[BPF_CGROUP_SETSOCKOPT],
++				    &ctx, BPF_PROG_RUN);
++	release_sock(sk);
++	if (!ret) {
++		ret = -EPERM;
++		goto out;
++	}
++	if (ctx.optlen == -1) {
++		ret = 1;
++		goto out;
++	}
++	if (ctx.optlen < 0 || ctx.optlen > capacity) {
++		ret = -EFAULT;
++		goto out;
++	}
++	*level = ctx.level;
++	*optname = ctx.optname;
++	/* Zero means continue with the original user buffer, including large
++	 * options. Otherwise the caller takes ownership of the bounded buffer.
++	 */
++	if (ctx.optlen) {
++		*optlen = ctx.optlen;
++		*kernel_optval = ctx.optval;
++		ctx.optval = NULL;
++	}
++	ret = 0;
++out:
++	kfree(ctx.optval);
++	return ret;
++}
++EXPORT_SYMBOL(__cgroup_bpf_run_filter_setsockopt);
++
++int __cgroup_bpf_run_filter_getsockopt(struct sock *sk, int level,
++		int optname, char __user *optval, int __user *optlen,
++		int max_optlen, int retval)
++{
++	struct bpf_sockopt_kern ctx = { .sk = sk, .level = level,
++		.optname = optname, .retval = retval, .optlen = max_optlen };
++	struct cgroup *cgrp;
++	int ret, capacity;
++
++	if (!sk || !cgroup_bpf_enabled)
++		return retval;
++	cgrp = sock_cgroup_ptr(&sk->sk_cgrp_data);
++	if (sockopt_prog_array_empty(cgrp, BPF_CGROUP_GETSOCKOPT))
++		return retval;
++	capacity = sockopt_alloc_buf(&ctx, max_optlen);
++	if (capacity < 0)
++		return capacity;
++	if (!retval) {
++		if (get_user(ctx.optlen, optlen) || ctx.optlen < 0) {
++			ret = -EFAULT;
++			goto out;
++		}
++		if (copy_from_user(ctx.optval, optval, min(ctx.optlen, capacity))) {
++			ret = -EFAULT;
++			goto out;
++		}
++	}
++	lock_sock(sk);
++	ret = BPF_PROG_RUN_ARRAY_CHECK(cgrp->bpf.effective[BPF_CGROUP_GETSOCKOPT],
++				    &ctx, BPF_PROG_RUN);
++	release_sock(sk);
++	if (!ret) {
++		ret = -EPERM;
++		goto out;
++	}
++	if (ctx.optlen < 0 || ctx.optlen > capacity ||
++	    (ctx.retval && ctx.retval != retval)) {
++		ret = -EFAULT;
++		goto out;
++	}
++	if (ctx.optlen && (copy_to_user(optval, ctx.optval, ctx.optlen) ||
++			  put_user(ctx.optlen, optlen))) {
++		ret = -EFAULT;
++		goto out;
++	}
++	ret = ctx.retval;
++out:
++	kfree(ctx.optval);
++	return ret;
++}
++EXPORT_SYMBOL(__cgroup_bpf_run_filter_getsockopt);
++
++static const struct bpf_func_proto *
++cg_sockopt_func_proto(enum bpf_func_id id, const struct bpf_prog *prog)
++{
++	switch (id) {
++	case BPF_FUNC_map_lookup_elem: return &bpf_map_lookup_elem_proto;
++	case BPF_FUNC_map_update_elem: return &bpf_map_update_elem_proto;
++	case BPF_FUNC_map_delete_elem: return &bpf_map_delete_elem_proto;
++	case BPF_FUNC_get_current_uid_gid: return &bpf_get_current_uid_gid_proto;
++	case BPF_FUNC_get_current_pid_tgid: return &bpf_get_current_pid_tgid_proto;
++	case BPF_FUNC_get_current_comm: return &bpf_get_current_comm_proto;
++	case BPF_FUNC_ktime_get_ns: return &bpf_ktime_get_ns_proto;
++	case BPF_FUNC_get_prandom_u32: return &bpf_get_prandom_u32_proto;
++	case BPF_FUNC_get_smp_processor_id: return &bpf_get_smp_processor_id_proto;
++	case BPF_FUNC_trace_printk:
++		return capable(CAP_SYS_ADMIN) ? bpf_get_trace_printk_proto() : NULL;
++	default: return NULL;
++	}
++}
++
++static bool cg_sockopt_is_valid_access(int off, int size,
++		enum bpf_access_type type, const struct bpf_prog *prog,
++		struct bpf_insn_access_aux *info)
++{
++	if ((size != 4 && size != 8) || off < 0 ||
++	    off > sizeof(struct bpf_sockopt) - size || off % size)
++		return false;
++	if (type == BPF_WRITE) {
++		if (size != 4)
++			return false;
++		switch (off) {
++		case offsetof(struct bpf_sockopt, level):
++		case offsetof(struct bpf_sockopt, optname):
++			return prog->expected_attach_type == BPF_CGROUP_SETSOCKOPT;
++		case offsetof(struct bpf_sockopt, retval):
++			return prog->expected_attach_type == BPF_CGROUP_GETSOCKOPT;
++		case offsetof(struct bpf_sockopt, optlen): return true;
++		default: return false;
++		}
++	}
++	if (type != BPF_READ)
++		return false;
++	switch (off) {
++	case offsetof(struct bpf_sockopt, optval):
++		if (size != 8) return false;
++		info->reg_type = PTR_TO_PACKET;
++		return true;
++	case offsetof(struct bpf_sockopt, optval_end):
++		if (size != 8) return false;
++		info->reg_type = PTR_TO_PACKET_END;
++		return true;
++	case offsetof(struct bpf_sockopt, level):
++	case offsetof(struct bpf_sockopt, optname):
++	case offsetof(struct bpf_sockopt, optlen): return size == 4;
++	case offsetof(struct bpf_sockopt, retval):
++		return size == 4 && prog->expected_attach_type == BPF_CGROUP_GETSOCKOPT;
++	default:
++		/* PTR_TO_SOCKET and its verifier rules need a separate backport.
++		 * Do not expose a kernel pointer as an untyped scalar.
++		 */
++		return false;
++	}
++}
++
++#define CG_SOCKOPT_ACCESS_FIELD(T, F) \
++	T(BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, F), \
++	  si->dst_reg, si->src_reg, offsetof(struct bpf_sockopt_kern, F))
++
++static u32 cg_sockopt_convert_ctx_access(enum bpf_access_type type,
++		const struct bpf_insn *si, struct bpf_insn *buffer,
++		struct bpf_prog *prog, u32 *target_size)
++{
++	struct bpf_insn *insn = buffer;
++
++#define CONVERT_FIELD(F) \
++	case offsetof(struct bpf_sockopt, F): \
++		*target_size = BPF_FIELD_SIZEOF(struct bpf_sockopt_kern, F); \
++		if (type == BPF_WRITE) \
++			*insn++ = CG_SOCKOPT_ACCESS_FIELD(BPF_STX_MEM, F); \
++		else \
++			*insn++ = CG_SOCKOPT_ACCESS_FIELD(BPF_LDX_MEM, F); \
++		break
++	switch (si->off) {
++	CONVERT_FIELD(level);
++	CONVERT_FIELD(optname);
++	CONVERT_FIELD(optlen);
++	CONVERT_FIELD(retval);
++	CONVERT_FIELD(optval);
++	CONVERT_FIELD(optval_end);
++	}
++#undef CONVERT_FIELD
++	return insn - buffer;
++}
++
++const struct bpf_verifier_ops cg_sockopt_verifier_ops = {
++	.get_func_proto = cg_sockopt_func_proto,
++	.is_valid_access = cg_sockopt_is_valid_access,
++	.convert_ctx_access = cg_sockopt_convert_ctx_access,
++};
++
++const struct bpf_prog_ops cg_sockopt_prog_ops = {};
