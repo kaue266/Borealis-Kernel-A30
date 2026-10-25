@@ -1,0 +1,127 @@
+{
+  "kernel_commit": "e1b8464bb29ce5bcb9d52bfcfc71bc2563e12563",
+  "artifacts": {
+    "main": {
+      "root_enabled": false,
+      "image_bytes": 28772192,
+      "sha256": "89cd4f3c93d54e10c18de82cc9e5c803f35a11495c86e60add6a39c49922f7ed",
+      "kernel_version": "Linux version 4.4.302-p6-Eureka-Nebula-A30-Borealis-main_HEAD (borealis@linux) (clang version 14.0.0 ) #1 SMP PREEMPT Wed Oct 7 00:00:00 UTC 2026",
+      "security_selinux": true,
+      "clang_lto": true,
+      "cpu_driver_objects": {
+        "exynos-acme.o": {
+          "object_sha256": "ff14e277b97f3b2e5bb9f19b8d29b34eb210a89cd920a2bb3e6edb58781add16",
+          "compile_command_sha256": "55bcea4e317185b1fa738eba5b62a38391dddfe36d6b70bab52e0fa158be6e7b"
+        },
+        "exynos-ufc.o": {
+          "object_sha256": "c9eef3f5444e64dfd09f8447366d60350fe18de3c5a8ee685a40c1673803aedd",
+          "compile_command_sha256": "91533fc668e10898116da89444ee20fbe5eec98960486b31b91932958d812e7a"
+        }
+      }
+    },
+    "kernelsu": {
+      "root_enabled": true,
+      "image_bytes": 28839008,
+      "sha256": "c74e26821087b347fa471e25c5ab000f7a59a802d2931169a649e2f5d0a33c09",
+      "kernel_version": "Linux version 4.4.302-p6-Eureka-Nebula-A30-Borealis-kernelsu_HEAD (borealis@linux) (clang version 14.0.0 ) #1 SMP PREEMPT Wed Oct 7 00:00:00 UTC 2026",
+      "security_selinux": true,
+      "clang_lto": true,
+      "cpu_driver_objects": {
+        "exynos-acme.o": {
+          "object_sha256": "65925dde0065f82534354cb148f290459717cf538f30e9a5b21a8e9e642fa2fa",
+          "compile_command_sha256": "55bcea4e317185b1fa738eba5b62a38391dddfe36d6b70bab52e0fa158be6e7b"
+        },
+        "exynos-ufc.o": {
+          "object_sha256": "c9eef3f5444e64dfd09f8447366d60350fe18de3c5a8ee685a40c1673803aedd",
+          "compile_command_sha256": "91533fc668e10898116da89444ee20fbe5eec98960486b31b91932958d812e7a"
+        }
+      }
+    },
+    "dtb.img": {
+      "sha256": "8e1503d69a73c0b82c214231a5e5c9556bb11f17840b63226ad4410b3ca135d2",
+      "bytes": 86436,
+      "source": "kernel_zip/aroma/dtb/aosp/enf/9/dtb.img"
+    },
+    "dtbo.img": {
+      "sha256": "3449a028bc6f82c9f7a06bd393900777266cbd2dd784adf6c413e3da32b4d595",
+      "bytes": 596048,
+      "source": "kernel_zip/dtbo/a30/dtbo.img"
+    }
+  },
+  "android17_device_boot_verified": false,
+  "source_correspondence": {
+    "kernel_commit": "e1b8464bb29ce5bcb9d52bfcfc71bc2563e12563",
+    "tracked_worktree_patch_sha256": "b0024fe00a279d309a633468e4b1c5e2186bbccc354fadb178e9d29bf214b9e5",
+    "changed_source_sha256": {
+      "arch/alpha/include/uapi/asm/mman.h": "dedf1bcf8eb5c4f352cf8c6525aada8c735b9e8dd0e090ccd136dddb7f0bfd43",
+      "arch/mips/include/uapi/asm/mman.h": "7cd5c8fe5f1441bcac1bfce5e8229886f3e62e02b00cc6b0137fe39c37a74b68",
+      "arch/parisc/include/uapi/asm/mman.h": "e68fc4f082f5c2538fe779bd4d0fe6622fa7c3f65798bc86b73eea06e99fab34",
+      "arch/xtensa/include/uapi/asm/mman.h": "8a3e65cc494cd2710201218b759f4e0930c5d2c99d6719176935a19c639f8cf8",
+      "drivers/cpufreq/exynos-acme.c": "d8a8e2958ff5f65477efdf10b064db4b5030985be36a00ed70e628247c466dc0",
+      "drivers/cpufreq/exynos-ufc.c": "576b23456fc8bce436ae8b0aadfdedeb1666ac7e89528f3b956a1f172123d883",
+      "drivers/gpu/arm/b_r26p0/platform/exynos/gpu_custom_interface.c": "7c61d306fa4b35fc5bf0792b1db136a37c26cdb37a9a19a20e37a5e34b1601fb",
+      "drivers/gpu/arm/b_r26p0/platform/exynos/mali_kbase_platform.c": "d26e52e91e6dd0fa724c7eec9dfb87b15e30cca3086876509b8c810c31eb6e6e",
+      "drivers/input/input.c": "6675f548222b10a835c3340abe3caf04fcfcd97b7fd4f5590d164464a25496ef",
+      "drivers/trace/exynos-ss.c": "f2c828764d8e92ff69d95917cd8d64cb0bb188b06b9ac4002da72cfb985d3c5b",
+      "fs/exec.c": "e0c7bc48aeffe30140410926527f70adccf6d27cb56cef15defeb1185845d45b",
+      "fs/open.c": "0142616caef6eda673d547bde27ba40697679dfcefb13a807434e1e42165dd69",
+      "fs/proc/task_mmu.c": "c231f0ceee861a723bc5345f6f61af9f7a6b2e7506d12647a5bc85e7fc323cd9",
+      "fs/read_write.c": "a45a71cfe14388b5cac6cfc85294b8047bd2fdf19a980a6fcb45094792db7389",
+      "fs/stat.c": "5a17d58623ad3937005be4c9390467a3bbb94befd256daf7a739bd5ff0a97662",
+      "include/linux/bpf-cgroup.h": "ccb90f5604ee1f2842efc9d3dd8e83c504b87aee7f29b71f41c1e8f3ff8a813d",
+      "include/linux/bpf.h": "9d3edb91aa87c459d35d38d8f1a8086de4240d2419b007b25fd9df7c59ce5026",
+      "include/linux/bpf_types.h": "0b0946934adb259cff1b76559d0d7f1e408d31bbb0cfaa16c52470325db2c17d",
+      "include/linux/filter.h": "7b3cd24e4023c09059fc2710c074c5c5cac032d30f0d749f5894d2ed6074289d",
+      "include/linux/mm.h": "8396a11e11cd124175bda9590e3794c9daef6f4299d5da8d224dec2e07ee9b63",
+      "include/uapi/asm-generic/mman-common.h": "15626bcc863cd6870dc32365cda68bfbb97e7a0c241193aeadd8b168a04852f4",
+      "include/uapi/linux/bpf.h": "3809da94183df091cbee6ed7d459ae8d14b3c4ac2bf382546ce00c3bdcd0a2ca",
+      "kernel/bpf/Makefile": "7153b82efc1e972e523e5bdfb67f72d122b6479fdc0a36a3fad54fe3ba5d1d80",
+      "kernel/bpf/arraymap.c": "e6afc5bafc45e8f3ff2d44b6836657a0268fb9dedec4027bd4bd299c650948e3",
+      "kernel/bpf/cgroup.c": "5b3b671f6bceecbc9eb50d6a0e43ec6cba25796d0b7bf10cf86b74f8cb2f8cd5",
+      "kernel/bpf/core.c": "3246481a3bc507cab19e65737748e6d39a706f843780e18e71e935c6f668b1a8",
+      "kernel/bpf/hashtab.c": "63a317c33b7cee5b0eb057f0b9e247d1923cc4af267f9b956fa37da38a31a5fc",
+      "kernel/bpf/sockopt.c": "083f18a32458c126cf56b4b0e35153202c47d59278529e204117b1003c06fded",
+      "kernel/bpf/syscall.c": "ad144629a0fdc5c51c5b06397cdbf5e874128354a1fe28a96c1cafbf476c223f",
+      "kernel/bpf/verifier.c": "63b4610540251668833b1bda929d75743c8e44999fe07c0fa270d1b7a6df756e",
+      "kernel/fork.c": "110455883f8907340f20e341a0f1fe14c954acc67b9b786ad080f3bf5dea44bc",
+      "mm/madvise.c": "ccc0d7dec819d3793e7644f74f58b310c6cc37c238fe11a9eda62c1fc4acd874",
+      "net/compat.c": "c42c8777160775c15149be882e2de5f3cfb2ef8571c49bb0ae52612aa54f56b0",
+      "net/core/filter.c": "583e13163afad5a2234b95b6bf3f6657ddc2aa9c359fa96b76fab5bb76d2596d",
+      "net/ipv4/af_inet.c": "a3f6d2477da11ab0fa1984fed58488c0532b9db74cb6dc9b0b43c940d54447b6",
+      "net/socket.c": "0a09288598f6fd9dfe8e14b7508f7f4204c342f35eb5152eebaae76a7bf0a010",
+      "security/selinux/hooks.c": "3ad1c8f9b40d8555457c10d0028e6cd6f4c7aae2ff632abb221abe4ad73c12d6"
+    },
+    "kernelsu_commit": "109442f8c4c7692af6562bdad6fd9f39dc1f935b",
+    "backport_patch_sha256": {
+      "0001-r24u-cgroup-sockopt.patch": "b4639af451915aa5b91f8e3861838285370655fa84649369005af385c6bf24b2",
+      "0002-r24u-map-batch.patch": "78030ab2c1f27adf2bd8a8109a1e766295ccdf517f0a13b6e4663ec784c74e01",
+      "0003-r24u-borrowed-socket.patch": "fdbd6cafee67f5b0934f209fdbe2b544fcf65c92e2e94b129383d4f7767dba3b",
+      "0004-r24u-array-mmap.patch": "fb7f91abaeb327c213170180c2e9a4a365a1b058161d92e047587c5f8d512661",
+      "0005-r24u-socket-release.patch": "d8b9d1aed00ec6e96f4c1d995593eae92b0720b2f154f6a75e095276d6117d58",
+      "0006-r24u-wipeonfork.patch": "7d90823267b6e60d3d75b3034aa352d310c7fc934881f39c576a2d6f46a86c1b"
+    }
+  },
+  "bpf_backports_linked": true,
+  "cpu_dt_fallback_linked": true,
+  "cpu_dt_fallback_source": {
+    "scope": "CPU DT fallback and independent optional overrides within CAL/domain bounds",
+    "before_sha256": {
+      "drivers/cpufreq/exynos-acme.c": "0d0bcd577f8925ea319afecc530528ff68bd0540d5170d4d287265f4ded17180",
+      "drivers/cpufreq/exynos-ufc.c": "e7d744aed3a2baf0df5788a7e4bea316972b55563ad2e75522a408e5fd01fe5c"
+    },
+    "changed_files": {
+      "drivers/cpufreq/exynos-acme.c": "d8a8e2958ff5f65477efdf10b064db4b5030985be36a00ed70e628247c466dc0",
+      "drivers/cpufreq/exynos-ufc.c": "576b23456fc8bce436ae8b0aadfdedeb1666ac7e89528f3b956a1f172123d883"
+    },
+    "patch_sha256": "058cd63b5273475fd70d881235034beb328178e01a3ea3ad45b1480c1d0d2787",
+    "host_tested": true,
+    "full_kernel_link_passed": false,
+    "device_tested": false,
+    "cold_boot_causality_proved": false,
+    "thermal_protections_modified": false,
+    "host_cases": 972
+  },
+  "android17_network_compatibility": "Unverified: version gates, socket storage/helper dependencies and Android 17 runtime remain unresolved",
+  "installable_package": false,
+  "scope": "Compiled diagnostics. Not a validated Android 17 kernel release."
+}
