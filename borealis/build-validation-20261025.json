@@ -1,0 +1,20 @@
+{
+  "target": "Samsung SM-A305GT / Exynos 7904-7885",
+  "kernel_release": "4.4.302-p6-Eureka_HEAD",
+  "base_commit": "e1b8464bb29ce5bcb9d52bfcfc71bc2563e12563",
+  "compiler": "Clang 14.0.0, ld.lld, 4 jobs",
+  "target_built": "Image (ARM64)",
+  "exit_code": 0,
+  "image_bytes": 28788576,
+  "image_sha256": "0fac593de6a47de44a60a78294db3a5c3be6912192afe2246c8a85e9e467a19e",
+  "config_sha256": "d69a8ad238ebfac0ece68d444dc812d2617b02dd0663c2745397ce9ba828a7e5",
+  "dtb_dtbo_included": false,
+  "ramdisk_or_boot_header_included": false,
+  "phone_tested": false,
+  "phone_written": false,
+  "warnings": [
+    "Image build emitted nonfatal find messages because arch/arm64/boot/dts/ is absent in this source target."
+  ],
+  "safety_note": "CONFIG_BYPASS_CPU_THROTTLING=y is inherited from the A30 defconfig; Kconfig says CPU throttling remains bypassed until above 95 C. It was not modified in this build.",
+  "change": "Remove unused unlock label in net/core/bpf_sk_storage.c; no control-flow change."
+}

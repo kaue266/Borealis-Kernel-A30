@@ -487,8 +487,8 @@
     },
     {
       "path": "net/core/bpf_sk_storage.c",
-      "bytes": 21622,
-      "sha256": "0fc37d19986f71cbc18496be05b1faa5fa7babefd6e1a1bce8b79d07cdc3bb8f"
+      "bytes": 21614,
+      "sha256": "2d3daa20a55ffca5236c8e2d740980581a83b0176eafac0cd6b0861a27aba7de"
     },
     {
       "path": "net/core/filter.c",
