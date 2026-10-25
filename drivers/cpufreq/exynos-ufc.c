@@ -23,6 +23,28 @@
 
 #include "exynos-acme.h"
 
+/* Optional Eureka values override valid standard values independently.
+ * Missing/invalid values retain the existing CAL/device bounds. Never expand
+ * the calibrated range while selecting the initial boot/QoS contract.
+ */
+#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+static unsigned int exynos_eureka_dt_freq(struct device_node *dn,
+        const char *standard, const char *custom, unsigned int fallback,
+        unsigned int minimum, unsigned int maximum)
+{
+    unsigned int val;
+
+    if (!of_property_read_u32(dn, standard, &val) &&
+        val > 0 && val >= minimum && val <= maximum)
+        fallback = val;
+    if (!of_property_read_u32(dn, custom, &val) &&
+        val > 0 && val >= minimum && val <= maximum)
+        fallback = val;
+    return fallback;
+}
+#endif
+
+
 struct exynos_ufc_req {
         int                     last_min_input;
         int                     last_min_wo_boost_input;
@@ -558,19 +580,16 @@ static __init void init_sysfs(void)
 static int parse_ufc_ctrl_info(struct exynos_cpufreq_domain *domain,
 					struct device_node *dn)
 {
-	unsigned int val;
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-	unsigned int ekval;
-#endif
-
-	if (!of_property_read_u32(dn, "user-default-qos", &val)) {
-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		if (!of_property_read_u32(dn, "eureka_user-default-qos", &ekval))
-			domain->user_default_qos = ekval;
+	domain->user_default_qos = exynos_eureka_dt_freq(dn, "user-default-qos",
+		"eureka_user-default-qos", domain->user_default_qos,
+		domain->min_freq, domain->max_freq);
 #else
+	unsigned int val;
+
+	if (!of_property_read_u32(dn, "user-default-qos", &val))
 		domain->user_default_qos = val;
 #endif
-	}
 
 	return 0;
 }

@@ -2115,24 +2115,26 @@ static ssize_t show_kernel_sysfs_clock(struct kobject *kobj, struct kobj_attribu
 static ssize_t show_kernel_sysfs_freq_table(struct kobject *kobj, struct kobj_attribute *attr, char *buf)
 {
 	ssize_t ret = 0;
-	int i = 0;
-	struct exynos_context *platform = (struct exynos_context *)pkbdev->platform_context;
+	int i, min_level, max_level;
+	struct exynos_context *platform;
 
-	if (!platform)
+	if (!pkbdev || !pkbdev->platform_context)
+		return -ENODEV;
+	platform = (struct exynos_context *)pkbdev->platform_context;
+	if (!platform->table || platform->table_size <= 0)
 		return -ENODEV;
 
-	for (i = gpu_dvfs_get_level(platform->gpu_min_clock); i >= gpu_dvfs_get_level(platform->gpu_max_clock); i--) {
-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "%d ", platform->table[i].clock);
-	}
+	min_level = gpu_dvfs_get_level(platform->gpu_min_clock);
+	max_level = gpu_dvfs_get_level(platform->gpu_max_clock);
+	/* A failed lookup is not a table index or an available frequency. */
+	if (min_level < 0 || max_level < 0 ||
+	    min_level >= platform->table_size || max_level >= platform->table_size ||
+	    min_level < max_level)
+		return -EINVAL;
 
-	if (ret < PAGE_SIZE - 1) {
-		ret += snprintf(buf+ret, PAGE_SIZE-ret, "\n");
-	} else {
-		buf[PAGE_SIZE-2] = '\n';
-		buf[PAGE_SIZE-1] = '\0';
-		ret = PAGE_SIZE-1;
-	}
-
+	for (i = min_level; i >= max_level && ret < PAGE_SIZE - 2; i--)
+		ret += scnprintf(buf + ret, PAGE_SIZE - ret - 1, "%d ", platform->table[i].clock);
+	ret += scnprintf(buf + ret, PAGE_SIZE - ret, "\n");
 	return ret;
 }
 

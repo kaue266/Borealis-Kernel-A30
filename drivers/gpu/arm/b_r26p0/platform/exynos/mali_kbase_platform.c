@@ -225,6 +225,13 @@ void gpu_update_config_data_int_array(struct device_node *np, const char *of_str
 		GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "\n");
 	}
 }
+/* Missing optional Eureka nodes retain the standard device contract. */
+#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+static int gpu_valid_custom_clock(int standard, int custom)
+{
+	return custom > 0 ? custom : standard;
+}
+#endif
 static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 {
 #ifdef CONFIG_MALI_DVFS
@@ -257,8 +264,9 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 		platform->interactive.highspeed_load  = of_data_int_array[1] == 0 ? 100 : (u32) of_data_int_array[1];
 		platform->interactive.highspeed_delay = of_data_int_array[2] == 0 ? 0 : (u32) of_data_int_array[2];
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		platform->interactive.highspeed_clock = platform->interactive.eureka_gpu_highspeed_clock;
-		platform->interactive.highspeed_load = platform->interactive.eureka_gpu_highspeed_load;
+		platform->interactive.highspeed_clock = gpu_valid_custom_clock(platform->interactive.highspeed_clock, platform->interactive.eureka_gpu_highspeed_clock);
+		if (platform->interactive.eureka_gpu_highspeed_load > 0 && platform->interactive.eureka_gpu_highspeed_load <= 100)
+			platform->interactive.highspeed_load = platform->interactive.eureka_gpu_highspeed_load;
 #else
 		platform->interactive.highspeed_clock = 1001000;
 		platform->interactive.highspeed_load = 75;
@@ -286,23 +294,17 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	gpu_update_config_data_int(np, "gpu_pmqos_cpu_cluster_num", &platform->gpu_pmqos_cpu_cluster_num);
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
 	gpu_update_config_data_int(np, "eureka_gpu_max_clock", &platform->eureka_gpu_max_clock);
-	gpu_update_config_data_int_array(np, "eureka_gpu_temp_throttling", of_data_int_array, 6);
-	platform->eureka_gpu_temp_throttling_0 = of_data_int_array[0];
-	platform->eureka_gpu_temp_throttling_1 = of_data_int_array[1];
-	platform->eureka_gpu_temp_throttling_2 = of_data_int_array[2];
-	platform->eureka_gpu_temp_throttling_3 = of_data_int_array[3];
-	platform->eureka_gpu_temp_throttling_4 = of_data_int_array[4];
-	platform->eureka_gpu_temp_throttling_5 = of_data_int_array[5];
+
 #endif
 	gpu_update_config_data_int(np, "gpu_max_clock", &platform->gpu_max_clock);
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-	platform->gpu_max_clock = platform->eureka_gpu_max_clock;
+	platform->gpu_max_clock = gpu_valid_custom_clock(platform->gpu_max_clock, platform->eureka_gpu_max_clock);
 #else
 	platform->gpu_max_clock = 1300000;
 #endif
 	gpu_update_config_data_int(np, "gpu_max_clock_limit", &platform->gpu_max_clock_limit);
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-	platform->gpu_max_clock_limit = platform->eureka_gpu_max_clock;
+	platform->gpu_max_clock_limit = gpu_valid_custom_clock(platform->gpu_max_clock_limit, platform->eureka_gpu_max_clock);
 #else
 	platform->gpu_max_clock_limit = 1300000;
 #endif
@@ -317,12 +319,15 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	if (of_data_int == TMU_LOCK_CLK_END) {
 		gpu_update_config_data_int_array(np, "gpu_temp_throttling", platform->tmu_lock_clk, TMU_LOCK_CLK_END);
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		platform->tmu_lock_clk[0] = platform->eureka_gpu_temp_throttling_0;
-		platform->tmu_lock_clk[1] = platform->eureka_gpu_temp_throttling_1;
-		platform->tmu_lock_clk[2] = platform->eureka_gpu_temp_throttling_2;
-		platform->tmu_lock_clk[3] = platform->eureka_gpu_temp_throttling_3;
-		platform->tmu_lock_clk[4] = platform->eureka_gpu_temp_throttling_4;
-		platform->tmu_lock_clk[5] = platform->eureka_gpu_temp_throttling_5;
+		if (!of_property_read_u32_array(np, "eureka_gpu_temp_throttling",
+				of_data_int_array, TMU_LOCK_CLK_END)) {
+			for (i = 0; i < TMU_LOCK_CLK_END; i++)
+				if (of_data_int_array[i] <= 0)
+					break;
+			if (i == TMU_LOCK_CLK_END)
+				for (i = 0; i < TMU_LOCK_CLK_END; i++)
+					platform->tmu_lock_clk[i] = of_data_int_array[i];
+		}
 #else
 		platform->tmu_lock_clk[0] = 676000;
 		platform->tmu_lock_clk[1] = 545000;

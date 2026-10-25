@@ -24,6 +24,28 @@
 
 #include "exynos-acme.h"
 
+/* Optional Eureka values override valid standard values independently.
+ * Missing/invalid values retain the existing CAL/device bounds. Never expand
+ * the calibrated range while selecting the initial boot/QoS contract.
+ */
+#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+static unsigned int exynos_eureka_dt_freq(struct device_node *dn,
+        const char *standard, const char *custom, unsigned int fallback,
+        unsigned int minimum, unsigned int maximum)
+{
+    unsigned int val;
+
+    if (!of_property_read_u32(dn, standard, &val) &&
+        val > 0 && val >= minimum && val <= maximum)
+        fallback = val;
+    if (!of_property_read_u32(dn, custom, &val) &&
+        val > 0 && val >= minimum && val <= maximum)
+        fallback = val;
+    return fallback;
+}
+#endif
+
+
 /*
  * list head of cpufreq domain
  */
@@ -881,9 +903,9 @@ free_table:
 static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
 					struct device_node *dn)
 {
-	unsigned int boot_qos, val;
-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-	unsigned int ekval;
+	unsigned int boot_qos;
+#ifndef CONFIG_EUREKA_CUSTOM_DT_NODES
+	unsigned int val;
 #endif
 
 	/*
@@ -893,14 +915,13 @@ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
 	 * between max frequency of domain and the value defined in device tree.
 	 */
 	boot_qos = domain->max_freq;
-	if (!of_property_read_u32(dn, "pm_qos-booting", &val)) {
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		if (!of_property_read_u32(dn, "eureka_pm_qos-booting", &ekval))
-			boot_qos = min(boot_qos, ekval);
+	boot_qos = exynos_eureka_dt_freq(dn, "pm_qos-booting",
+		"eureka_pm_qos-booting", boot_qos, domain->min_freq, domain->max_freq);
 #else
+	if (!of_property_read_u32(dn, "pm_qos-booting", &val))
 		boot_qos = min(boot_qos, val);
 #endif
-	}
 
 	pm_qos_update_request_timeout(&domain->min_qos_req,
 			boot_qos, 40 * USEC_PER_SEC);
@@ -1158,10 +1179,9 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 static __init int init_domain(struct exynos_cpufreq_domain *domain,
 					struct device_node *dn)
 {
-	unsigned int val;
 	int ret;
-#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-	unsigned int ekval;
+#ifndef CONFIG_EUREKA_CUSTOM_DT_NODES
+	unsigned int val;
 #endif
 
 	mutex_init(&domain->lock);
@@ -1177,27 +1197,25 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 	 * selected to the value defined in device tree
 	 */
 #ifndef CONFIG_EXYNOS_HOTPLUG_GOVERNOR
-	if (!of_property_read_u32(dn, "max-freq", &val)) {
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		if (!of_property_read_u32(dn, "eureka_max-freq", &ekval))
-			domain->max_freq = ekval;
+	domain->max_freq = exynos_eureka_dt_freq(dn, "max-freq", "eureka_max-freq",
+		domain->max_freq, domain->min_freq, domain->max_freq);
 #else
-		if (domain->id == 0) {
+	if (!of_property_read_u32(dn, "max-freq", &val)) {
+		if (domain->id == 0)
 			domain->max_freq = 1690000;
-		} else if (domain->id == 1) {
-	                domain->max_freq = 2080000;
-		}
-#endif
+		else if (domain->id == 1)
+			domain->max_freq = 2080000;
 	}
 #endif
-	if (!of_property_read_u32(dn, "min-freq", &val)) {
+#endif
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
-		if (!of_property_read_u32(dn, "eureka_min-freq", &ekval))
-			domain->min_freq = ekval;
+	domain->min_freq = exynos_eureka_dt_freq(dn, "min-freq", "eureka_min-freq",
+		domain->min_freq, domain->min_freq, domain->max_freq);
 #else
+	if (!of_property_read_u32(dn, "min-freq", &val))
 		domain->min_freq = val;
 #endif
-	}
 
 	// Disable 1794000 as it's causing issues.
 	if (domain->max_freq == 1794000) {
@@ -1218,6 +1236,8 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 		domain->boot_freq = domain->max_freq;
 		domain->resume_freq = 1560000;
 	}
+	domain->boot_freq = clamp(domain->boot_freq, domain->min_freq, domain->max_freq);
+	domain->resume_freq = clamp(domain->resume_freq, domain->min_freq, domain->max_freq);
 #else
         if (domain->id == 0)
         {
