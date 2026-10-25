@@ -39,6 +39,7 @@
 #include <net/netlink.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
+#include <net/bpf_sk_storage.h>
 #include <net/flow_dissector.h>
 #include <linux/errno.h>
 #include <linux/timer.h>
@@ -56,6 +57,10 @@
 #include <net/sock_reuseport.h>
 #include <net/busy_poll.h>
 #include <net/tcp.h>
+#include <net/udp.h>
+#include <net/inet_hashtables.h>
+#include <net/inet6_hashtables.h>
+#include <net/request_sock.h>
 #include <linux/bpf_trace.h>
 
 /**
@@ -2985,6 +2990,19 @@ static const struct bpf_func_proto bpf_get_socket_cookie_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
+
+BPF_CALL_1(bpf_get_socket_cookie_sock, struct sock *, sk)
+{
+    return sock_gen_cookie(sk);
+}
+
+const struct bpf_func_proto bpf_get_socket_cookie_sock_proto = {
+    .func = bpf_get_socket_cookie_sock,
+    .gpl_only = false,
+    .ret_type = RET_INTEGER,
+    .arg1_type = ARG_PTR_TO_SOCKET,
+};
+
 BPF_CALL_1(bpf_get_socket_uid, struct sk_buff *, skb)
 {
 	struct sock *sk = sk_to_full_sk(skb->sk);
@@ -3173,10 +3191,120 @@ sock_addr_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	}
 }
 
+
+/* Linux 5.10 helper ABI on this tree's reference-owning 4.4 lookup APIs.
+ * Unlike modern SOCK_RCU_FREE paths, all returned full sockets own one ref.
+ * NET_L3_MASTER_DEV must remain disabled until sdif lookup is ported.
+ */
+struct borealis_bpf_sock_tuple {
+ union {
+  struct { __be32 saddr, daddr; __be16 sport, dport; } ipv4;
+  struct { __be32 saddr[4], daddr[4]; __be16 sport, dport; } ipv6;
+ };
+};
+static struct sock *borealis_lookup_fullsock(struct sock *sk)
+{
+ if (sk && sk->sk_state == TCP_NEW_SYN_RECV) {
+  struct sock *listener = inet_reqsk(sk)->rsk_listener;
+  if (listener && !atomic_inc_not_zero(&listener->sk_refcnt)) listener = NULL;
+  sock_gen_put(sk);
+  sk = listener;
+ }
+ if (sk && !sk_fullsock(sk)) { sock_gen_put(sk); sk = NULL; }
+ return sk;
+}
+static struct sock *borealis_sk_lookup(struct sk_buff *skb,
+ struct borealis_bpf_sock_tuple *tuple, u32 len, u8 proto,
+ u64 netns_id, u64 flags)
+{
+ struct net *caller, *net;
+ struct sock *sk = NULL;
+ int dif;
+ bool other;
+ if (flags || !((s32)netns_id < 0 || netns_id <= S32_MAX) ||
+     (len != sizeof(tuple->ipv4) && len != sizeof(tuple->ipv6))) return NULL;
+ if (skb->dev) { caller = dev_net(skb->dev); dif = skb->dev->ifindex; }
+ else if (skb->sk) { caller = sock_net(skb->sk); dif = 0; }
+ else return NULL;
+ other = (s32)netns_id >= 0;
+ net = other ? get_net_ns_by_id(caller, (s32)netns_id) : caller;
+ if (!net || IS_ERR(net)) return NULL;
+ if (len == sizeof(tuple->ipv4)) {
+  if (proto == IPPROTO_TCP)
+   sk = __inet_lookup(net, &tcp_hashinfo, NULL, 0, tuple->ipv4.saddr,
+        tuple->ipv4.sport, tuple->ipv4.daddr, tuple->ipv4.dport, dif);
+  else sk = udp4_lib_lookup(net, tuple->ipv4.saddr, tuple->ipv4.sport,
+        tuple->ipv4.daddr, tuple->ipv4.dport, dif);
+ } else {
+#if IS_ENABLED(CONFIG_IPV6)
+  const struct in6_addr *src = (const struct in6_addr *)tuple->ipv6.saddr;
+  const struct in6_addr *dst = (const struct in6_addr *)tuple->ipv6.daddr;
+  if (proto == IPPROTO_TCP)
+   sk = __inet6_lookup(net, &tcp_hashinfo, NULL, 0, src, tuple->ipv6.sport,
+        dst, ntohs(tuple->ipv6.dport), dif);
+  else sk = udp6_lib_lookup(net, src, tuple->ipv6.sport, dst, tuple->ipv6.dport, dif);
+#endif
+ }
+ if (other) put_net(net);
+ return borealis_lookup_fullsock(sk);
+}
+BPF_CALL_5(borealis_bpf_sk_lookup_tcp, struct sk_buff *, skb,
+ struct borealis_bpf_sock_tuple *, tuple, u32, len, u64, netns_id, u64, flags)
+{ return (unsigned long)borealis_sk_lookup(skb, tuple, len, IPPROTO_TCP, netns_id, flags); }
+BPF_CALL_5(borealis_bpf_sk_lookup_udp, struct sk_buff *, skb,
+ struct borealis_bpf_sock_tuple *, tuple, u32, len, u64, netns_id, u64, flags)
+{ return (unsigned long)borealis_sk_lookup(skb, tuple, len, IPPROTO_UDP, netns_id, flags); }
+static const struct bpf_func_proto borealis_bpf_sk_lookup_tcp_proto = {
+ .func = borealis_bpf_sk_lookup_tcp, .gpl_only = false, .pkt_access = true,
+ .ret_type = RET_PTR_TO_SOCKET_OR_NULL, .arg1_type = ARG_PTR_TO_CTX,
+ .arg2_type = ARG_PTR_TO_MEM, .arg3_type = ARG_CONST_SIZE,
+ .arg4_type = ARG_ANYTHING, .arg5_type = ARG_ANYTHING,
+};
+static const struct bpf_func_proto borealis_bpf_sk_lookup_udp_proto = {
+ .func = borealis_bpf_sk_lookup_udp, .gpl_only = false, .pkt_access = true,
+ .ret_type = RET_PTR_TO_SOCKET_OR_NULL, .arg1_type = ARG_PTR_TO_CTX,
+ .arg2_type = ARG_PTR_TO_MEM, .arg3_type = ARG_CONST_SIZE,
+ .arg4_type = ARG_ANYTHING, .arg5_type = ARG_ANYTHING,
+};
+BPF_CALL_1(borealis_bpf_sk_release, struct sock *, sk)
+{ sock_put(sk); return 0; }
+static const struct bpf_func_proto borealis_bpf_sk_release_proto = {
+ .func = borealis_bpf_sk_release, .gpl_only = false,
+ .ret_type = RET_INTEGER, .arg1_type = ARG_PTR_TO_SOCKET,
+};
+
+BPF_CALL_1(borealis_bpf_sk_fullsock, struct sock *, sk)
+{
+ return (unsigned long)(sk && sk_fullsock(sk) ? sk : NULL);
+}
+static const struct bpf_func_proto borealis_bpf_sk_fullsock_proto = {
+ .func = borealis_bpf_sk_fullsock, .gpl_only = false,
+ .ret_type = RET_PTR_TO_SOCKET_OR_NULL, .arg1_type = ARG_PTR_TO_SOCK_COMMON,
+};
+
 static const struct bpf_func_proto *
 sk_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
+ case BPF_FUNC_sk_lookup_tcp: return &borealis_bpf_sk_lookup_tcp_proto;
+ case BPF_FUNC_sk_lookup_udp: return &borealis_bpf_sk_lookup_udp_proto;
+ case BPF_FUNC_sk_release: return &borealis_bpf_sk_release_proto;
+ case BPF_FUNC_sk_fullsock:
+  return &borealis_bpf_sk_fullsock_proto;
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_ringbuf_reserve:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
 	case BPF_FUNC_skb_load_bytes:
 		return &bpf_skb_load_bytes_proto;
 	case BPF_FUNC_skb_load_bytes_relative:
@@ -3194,6 +3322,20 @@ static const struct bpf_func_proto *
 tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 {
 	switch (func_id) {
+	case BPF_FUNC_ringbuf_output:
+		return &bpf_ringbuf_output_proto;
+	case BPF_FUNC_ringbuf_reserve:
+		return &bpf_ringbuf_reserve_proto;
+	case BPF_FUNC_ringbuf_submit:
+		return &bpf_ringbuf_submit_proto;
+	case BPF_FUNC_ringbuf_discard:
+		return &bpf_ringbuf_discard_proto;
+	case BPF_FUNC_ringbuf_query:
+		return &bpf_ringbuf_query_proto;
+	case BPF_FUNC_sk_storage_get:
+		return &bpf_sk_storage_get_proto;
+	case BPF_FUNC_sk_storage_delete:
+		return &bpf_sk_storage_delete_proto;
 	case BPF_FUNC_skb_store_bytes:
 		return &bpf_skb_store_bytes_proto;
 	case BPF_FUNC_skb_load_bytes:
@@ -3378,14 +3520,30 @@ static bool bpf_skb_is_valid_access(int off, int size, enum bpf_access_type type
 {
 	const int size_default = sizeof(__u32);
 
-	if (off < 0 || off >= sizeof(struct __sk_buff))
-		return false;
+ if (off < 0 || off + size > sizeof(struct __sk_buff) ||
+     (off > offsetof(struct __sk_buff, sk) && off < sizeof(struct __sk_buff)))
+  return false;
 
 	/* The verifier guarantees that size > 0. */
 	if (off % size != 0)
 		return false;
 
 	switch (off) {
+ case bpf_ctx_range(struct __sk_buff, gso_segs):
+  if (type != BPF_READ || size != sizeof(__u32)) return false;
+  break;
+ case offsetof(struct __sk_buff, sk):
+  if (type != BPF_READ || size != sizeof(__u64)) return false;
+  info->reg_type = PTR_TO_SOCK_COMMON_OR_NULL;
+  break;
+ /* Added ABI placeholders must never fall through to unmapped accesses. */
+ case offsetof(struct __sk_buff, napi_id) + 4 ... offsetof(struct __sk_buff, gso_segs) - 1:
+  return false;
+ default: goto legacy_access;
+ }
+ return true;
+legacy_access:
+ switch (off) {
 	case bpf_ctx_range_till(struct __sk_buff, cb[0], cb[4]):
 		if (off + size > offsetofend(struct __sk_buff, cb[4]))
 			return false;
@@ -3526,11 +3684,63 @@ static bool __sock_filter_check_size(int off, int size,
 	return size == size_default;
 }
 
+/* SPDX-License-Identifier: GPL-2.0
+ * Borrowed socket metadata access, adapted to R24U from Linux v5.10.
+ * Only hooks whose context holds a live, non-NULL socket may supply this
+ * register type. Acquired/nullable sockets still require a separate port.
+ */
+bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
+			    struct bpf_insn_access_aux *info)
+{
+	int field;
+
+	if (type != BPF_READ || (size != 1 && size != 2 && size != 4) ||
+	    off < 0 || off > sizeof(struct bpf_sock) - size || off % size)
+		return false;
+	field = off & ~3;
+	if ((off & 3) + size > 4)
+		return false;
+	switch (field) {
+	case offsetof(struct bpf_sock, bound_dev_if):
+	case offsetof(struct bpf_sock, mark):
+	case offsetof(struct bpf_sock, priority):
+		if (size != 4)
+			return false;
+		break;
+	case offsetof(struct bpf_sock, family):
+	case offsetof(struct bpf_sock, type):
+	case offsetof(struct bpf_sock, protocol):
+	case offsetof(struct bpf_sock, src_ip4):
+	case offsetof(struct bpf_sock, src_ip6[0]) ... offsetof(struct bpf_sock, src_ip6[3]):
+	case offsetof(struct bpf_sock, src_port):
+	case offsetof(struct bpf_sock, dst_port):
+	case offsetof(struct bpf_sock, dst_ip4):
+	case offsetof(struct bpf_sock, dst_ip6[0]) ... offsetof(struct bpf_sock, dst_ip6[3]):
+	case offsetof(struct bpf_sock, state):
+	case offsetof(struct bpf_sock, rx_queue_mapping):
+		break;
+	default:
+		return false;
+	}
+	info->ctx_field_size = 4;
+	return true;
+}
+
 static bool sock_filter_is_valid_access(int off, int size,
 					enum bpf_access_type type,
 					const struct bpf_prog *prog,
 					struct bpf_insn_access_aux *info)
 {
+	/* Notification context is read-only; no legacy narrow-load rewriting. */
+	if (prog->expected_attach_type == BPF_CGROUP_INET_SOCK_RELEASE) {
+		if (type != BPF_READ || size != sizeof(__u32) ||
+		    off < 0 || off > sizeof(struct bpf_sock) - sizeof(__u32) ||
+		    (off & 3))
+			return false;
+		bpf_ctx_record_field_size(info, sizeof(__u32));
+		return true;
+	}
+
 	if (off < 0 || off >= sizeof(struct bpf_sock))
 		return false;
 	if (off % size != 0)
@@ -3966,6 +4176,25 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
 #endif
 		break;
 
+ case offsetof(struct __sk_buff, gso_segs):
+  *target_size = 2;
+#ifdef NET_SKBUFF_DATA_USES_OFFSET
+  *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+    BPF_REG_AX, si->src_reg, offsetof(struct sk_buff, end));
+  *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, head),
+    si->dst_reg, si->src_reg, offsetof(struct sk_buff, head));
+  *insn++ = BPF_ALU64_REG(BPF_ADD, si->dst_reg, BPF_REG_AX);
+#else
+  *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, end),
+    si->dst_reg, si->src_reg, offsetof(struct sk_buff, end));
+#endif
+  *insn++ = BPF_LDX_MEM(BPF_H, si->dst_reg, si->dst_reg,
+    offsetof(struct skb_shared_info, gso_segs));
+  break;
+ case offsetof(struct __sk_buff, sk):
+  *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, sk),
+    si->dst_reg, si->src_reg, offsetof(struct sk_buff, sk));
+  break;
 	case offsetof(struct __sk_buff, napi_id):
 #if defined(CONFIG_NET_RX_BUSY_POLL)
 		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
@@ -3982,13 +4211,15 @@ static u32 bpf_convert_ctx_access(enum bpf_access_type type,
 	return insn - insn_buf;
 }
 
-static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
+u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
 					  const struct bpf_insn *si,
 					  struct bpf_insn *insn_buf,
 					  struct bpf_prog *prog, u32 *target_size)
 {
 	struct bpf_insn *insn = insn_buf;
 	int off;
+
+	*target_size = 4;
 
 	switch (si->off) {
 	case offsetof(struct bpf_sock, bound_dev_if):
@@ -4081,6 +4312,38 @@ static u32 sock_filter_convert_ctx_access(enum bpf_access_type type,
 						    skc_num),
 				       target_size));
 		break;
+    case offsetof(struct bpf_sock, dst_port):
+        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_dport),
+            si->dst_reg, si->src_reg,
+            bpf_target_off(struct sock_common, skc_dport,
+                FIELD_SIZEOF(struct sock_common, skc_dport), target_size));
+        break;
+    case offsetof(struct bpf_sock, dst_ip4):
+        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+            offsetof(struct sock_common, skc_daddr));
+        break;
+    case bpf_ctx_range_till(struct bpf_sock, dst_ip6[0], dst_ip6[3]):
+#if IS_ENABLED(CONFIG_IPV6)
+        off = si->off - offsetof(struct bpf_sock, dst_ip6[0]);
+        *insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
+            offsetof(struct sock_common, skc_v6_daddr.s6_addr32[0]) + off);
+#else
+        *insn++ = BPF_MOV32_IMM(si->dst_reg, 0);
+#endif
+        break;
+    case offsetof(struct bpf_sock, state):
+        *insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sock_common, skc_state),
+            si->dst_reg, si->src_reg,
+            bpf_target_off(struct sock_common, skc_state,
+                FIELD_SIZEOF(struct sock_common, skc_state), target_size));
+        break;
+    case offsetof(struct bpf_sock, rx_queue_mapping):
+        /* R24U does not expose sk_rx_queue_mapping. Return its documented
+         * unavailable value, with the 32-bit load's correct zero extension.
+         */
+        *insn++ = BPF_MOV32_IMM(si->dst_reg, -1);
+        break;
+
 	}
 
 	return insn - insn_buf;
@@ -4490,10 +4753,51 @@ const struct bpf_prog_ops lwt_xmit_prog_ops = {
 	.test_run		= bpf_prog_test_run_skb,
 };
 
+/* SPDX-License-Identifier: GPL-2.0
+ * CGROUP_SOCK context is a live struct sock, never a struct sk_buff.
+ * The private argument constraint rejects adjusted context pointers.
+ */
+static const struct bpf_func_proto bpf_get_socket_cookie_sock_ctx_proto = {
+	.func = bpf_get_socket_cookie_sock,
+	.gpl_only = false,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_SOCK_CTX,
+};
+
+BPF_CALL_1(bpf_get_socket_uid_sock_ctx, struct sock *, sk)
+{
+	kuid_t kuid = sock_net_uid(sock_net(sk), sk);
+
+	return from_kuid_munged(sock_net(sk)->user_ns, kuid);
+}
+
+static const struct bpf_func_proto bpf_get_socket_uid_sock_ctx_proto = {
+	.func = bpf_get_socket_uid_sock_ctx,
+	.gpl_only = false,
+	.ret_type = RET_INTEGER,
+	.arg1_type = ARG_PTR_TO_SOCK_CTX,
+};
+
+static const struct bpf_func_proto *
+cg_sock_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
+{
+	switch (func_id) {
+ case BPF_FUNC_sk_storage_get: return &bpf_sk_storage_get_sock_ctx_proto;
+ case BPF_FUNC_sk_storage_delete: return &bpf_sk_storage_delete_sock_ctx_proto;
+	case BPF_FUNC_get_socket_cookie:
+		return &bpf_get_socket_cookie_sock_ctx_proto;
+	case BPF_FUNC_get_socket_uid:
+		return &bpf_get_socket_uid_sock_ctx_proto;
+	default:
+		return bpf_base_func_proto(func_id);
+	}
+}
+
+
 const struct bpf_verifier_ops cg_sock_verifier_ops = {
-	.get_func_proto		= bpf_base_func_proto,
+	.get_func_proto		= cg_sock_func_proto,
 	.is_valid_access	= sock_filter_is_valid_access,
-	.convert_ctx_access	= sock_filter_convert_ctx_access,
+	.convert_ctx_access	= bpf_sock_convert_ctx_access,
 };
 
 const struct bpf_prog_ops cg_sock_prog_ops = {

@@ -11,6 +11,7 @@
  * Copyright (C) 2000,2001	Andi Kleen, SuSE Labs
  */
 
+#include <linux/bpf-cgroup.h>
 #include <linux/kernel.h>
 #include <linux/gfp.h>
 #include <linux/fs.h>
@@ -369,6 +370,9 @@ static int compat_sock_setsockopt(struct socket *sock, int level, int optname,
 COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 		       char __user *, optval, unsigned int, optlen)
 {
+	mm_segment_t oldfs = get_fs();
+	char *kernel_optval = NULL;
+	int filtered_optlen;
 	int err;
 	struct socket *sock = sockfd_lookup(fd, &err);
 
@@ -379,6 +383,27 @@ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 			return err;
 		}
 
+        filtered_optlen = (int)optlen;
+        if (filtered_optlen < 0) {
+            err = -EINVAL;
+            goto borealis_sockopt_put;
+        }
+
+        err = BPF_CGROUP_RUN_PROG_SETSOCKOPT(sock->sk, &level, &optname,
+                optval, &filtered_optlen, &kernel_optval);
+        if (err < 0)
+            goto borealis_sockopt_put;
+        if (err > 0) {
+            err = 0;
+            goto borealis_sockopt_put;
+        }
+        if (kernel_optval) {
+            set_fs(KERNEL_DS);
+            optval = (char __user __force *)kernel_optval;
+        }
+
+        optlen = filtered_optlen;
+
 		if (level == SOL_SOCKET)
 			err = compat_sock_setsockopt(sock, level,
 					optname, optval, optlen);
@@ -388,6 +413,12 @@ COMPAT_SYSCALL_DEFINE5(setsockopt, int, fd, int, level, int, optname,
 		else
 			err = sock->ops->setsockopt(sock, level,
 					optname, optval, optlen);
+borealis_sockopt_put:
+        if (kernel_optval) {
+            set_fs(oldfs);
+            kfree(kernel_optval);
+        }
+
 		sockfd_put(sock);
 	}
 	return err;
@@ -493,6 +524,7 @@ EXPORT_SYMBOL(compat_sock_get_timestampns);
 COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 		       char __user *, optval, int __user *, optlen)
 {
+	int max_optlen;
 	int err;
 	struct socket *sock = sockfd_lookup(fd, &err);
 
@@ -503,6 +535,7 @@ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 			return err;
 		}
 
+        max_optlen = BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(optlen);
 		if (level == SOL_SOCKET)
 			err = compat_sock_getsockopt(sock, level,
 					optname, optval, optlen);
@@ -512,6 +545,9 @@ COMPAT_SYSCALL_DEFINE5(getsockopt, int, fd, int, level, int, optname,
 		else
 			err = sock->ops->getsockopt(sock, level,
 					optname, optval, optlen);
+        err = BPF_CGROUP_RUN_PROG_GETSOCKOPT(sock->sk, level, optname,
+                optval, optlen, max_optlen, err);
+
 		sockfd_put(sock);
 	}
 	return err;
