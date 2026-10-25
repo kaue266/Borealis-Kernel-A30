@@ -575,6 +575,11 @@ static struct exynos_ss_item ess_items[] = {
 /* - SMALL_DEBUG_MODE */
 #else /* [ORIGINAL MINIMIZED MODE] MINIMIZED MODE && ! SMALL_DEBUG_MODE */
 	{"log_kevents",	{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
+#if defined(CONFIG_MACH_EXYNOS7885_A30_OPEN) && !defined(CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER)
+	/* Keep log_kernel at +8 MiB, matching the A30 recovery. Padding is
+	 * reserved and persistent; it is never used as an event/log buffer. */
+	{"log_a30_gap_events", {SZ_2M * 3, 0, 0, true, true, true}, NULL, NULL, 0},
+#endif
 	{"log_kernel",	{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
 #ifdef CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER
 	{"log_platform",{SZ_2M,		0, 0, false, true, true}, NULL ,NULL, 0},
@@ -584,6 +589,11 @@ static struct exynos_ss_item ess_items[] = {
 #endif /* end of MINIMIZED MODE */
 
 #ifdef CONFIG_EXYNOS_SNAPSHOT_PSTORE
+#if defined(CONFIG_MACH_EXYNOS7885_A30_OPEN) && defined(CONFIG_EXYNOS_SNAPSHOT_MINIMIZED_MODE) && !defined(CONFIG_SEC_DEBUG_SMALL_DEBUG_MODE) && !defined(CONFIG_EXYNOS_SNAPSHOT_HOOK_LOGGER)
+	/* Preserve the recovery pstore offset (+18 MiB) without enabling the
+	 * expensive full event, platform or SFR logging profiles. */
+	{"log_a30_gap_pstore", {SZ_8M, 0, 0, true, true, true}, NULL, NULL, 0},
+#endif
 	{"log_pstore",	{SZ_32K,	0, 0, true, true, true}, NULL ,NULL, 0},
 #endif
 

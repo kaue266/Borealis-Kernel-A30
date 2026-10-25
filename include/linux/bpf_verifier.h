@@ -40,6 +40,8 @@ struct bpf_reg_state {
 	 * came from, when one is tested for != NULL.
 	 */
 	u32 id;
+	u32 mem_size;
+	u32 ref_obj_id;
 	/* These five fields must be last.  See states_equal() */
 	/* For scalar types (SCALAR_VALUE), this represents our knowledge of
 	 * the actual value.
@@ -70,7 +72,10 @@ enum bpf_stack_slot_type {
 /* state of the program:
  * type of all registers and stack info
  */
+#define MAX_BPF_ALLOC_REFS 16
 struct bpf_verifier_state {
+	u32 alloc_refs[MAX_BPF_ALLOC_REFS];
+	u32 alloc_ref_count;
 	struct bpf_reg_state regs[MAX_BPF_REG];
 	u8 stack_slot_type[MAX_BPF_STACK];
 	struct bpf_reg_state spilled_regs[MAX_BPF_STACK / BPF_REG_SIZE];

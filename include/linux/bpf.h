@@ -20,6 +20,9 @@
 struct perf_event;
 struct bpf_prog;
 struct bpf_map;
+struct btf;
+struct vm_area_struct;
+struct poll_table_struct;
 
 /* map is generic key/value storage optionally accesible by eBPF programs */
 struct bpf_map_ops {
@@ -27,7 +30,15 @@ struct bpf_map_ops {
 	struct bpf_map *(*map_alloc)(union bpf_attr *attr);
 	void (*map_release)(struct bpf_map *map, struct file *map_file);
 	void (*map_free)(struct bpf_map *map);
+	int (*map_mmap)(struct bpf_map *map, struct vm_area_struct *vma);
+	unsigned int (*map_poll)(struct bpf_map *map, struct file *filp, struct poll_table_struct *pts);
 	int (*map_get_next_key)(struct bpf_map *map, void *key, void *next_key);
+
+
+    int (*map_lookup_batch)(struct bpf_map *map, const union bpf_attr *attr,
+                           union bpf_attr __user *uattr);
+    int (*map_lookup_and_delete_batch)(struct bpf_map *map, const union bpf_attr *attr,
+                                      union bpf_attr __user *uattr);
 
 	/* funcs callable from userspace and from eBPF programs */
 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
@@ -41,6 +52,10 @@ struct bpf_map_ops {
 	u32 (*map_gen_lookup)(struct bpf_map *map, struct bpf_insn *insn_buf);
 };
 
+
+int bpf_array_lookup_batch(struct bpf_map *map, const union bpf_attr *attr,
+                          union bpf_attr __user *uattr);
+
 struct bpf_map {
 	atomic_t refcnt;
 	enum bpf_map_type map_type;
@@ -50,6 +65,9 @@ struct bpf_map {
 	u32 map_flags;
 	u32 pages;
 	u32 id;
+	struct btf *btf;
+	u32 btf_key_type_id;
+	u32 btf_value_type_id;
 	int numa_node;
 	bool unpriv_array;
 	struct user_struct *user;
@@ -73,6 +91,7 @@ enum bpf_arg_type {
 	ARG_CONST_MAP_PTR,	/* const argument used as pointer to bpf_map */
 	ARG_PTR_TO_MAP_KEY,	/* pointer to stack used as map key */
 	ARG_PTR_TO_MAP_VALUE,	/* pointer to stack used as map value */
+	ARG_PTR_TO_MAP_VALUE_OR_NULL, /* initialized value or NULL */
 
 	/* the following constraints used to prototype bpf_memcmp() and other
 	 * functions that access data on eBPF program stack
@@ -87,7 +106,13 @@ enum bpf_arg_type {
 	ARG_CONST_SIZE_OR_ZERO,	/* number of bytes accessed from memory or 0 */
 
 	ARG_PTR_TO_CTX,		/* pointer to context */
+	ARG_PTR_TO_SOCKET,	/* unmodified borrowed full socket */
+ ARG_PTR_TO_SOCK_COMMON, /* unmodified non-NULL common or full socket */
+ ARG_PTR_TO_STORAGE_SOCKET, /* runtime checks fullsock before storage access */
 	ARG_ANYTHING,		/* any (initialized) argument is ok */
+	ARG_PTR_TO_SOCK_CTX,	/* unmodified CGROUP_SOCK context */
+	ARG_PTR_TO_ALLOC_MEM, /* original, owned ring record */
+	ARG_CONST_ALLOC_SIZE_OR_ZERO, /* constant reservation size */
 };
 
 /* type of values returned from helper functions */
@@ -95,6 +120,8 @@ enum bpf_return_type {
 	RET_INTEGER,			/* function returns integer */
 	RET_VOID,			/* function doesn't return anything */
 	RET_PTR_TO_MAP_VALUE_OR_NULL,	/* returns a pointer to map elem value or NULL */
+	RET_PTR_TO_ALLOC_MEM_OR_NULL,
+ RET_PTR_TO_SOCKET_OR_NULL,
 };
 
 /* eBPF function prototype used by verifier to allow BPF_CALLs from eBPF programs
@@ -144,6 +171,12 @@ enum bpf_reg_type {
 	PTR_TO_STACK,		 /* reg == frame_pointer + offset */
 	PTR_TO_PACKET,		 /* reg points to skb->data */
 	PTR_TO_PACKET_END,	 /* skb->data + headlen */
+	PTR_TO_SOCKET,		 /* borrowed live socket from a holding context */
+	PTR_TO_ALLOC_MEM,
+	PTR_TO_ALLOC_MEM_OR_NULL,
+ PTR_TO_SOCKET_OR_NULL,
+ PTR_TO_SOCK_COMMON,
+ PTR_TO_SOCK_COMMON_OR_NULL,
 };
 
 /* The information passed from prog-specific *_is_valid_access
@@ -285,6 +318,7 @@ struct bpf_prog_array {
 struct bpf_prog_array *bpf_prog_array_alloc(u32 prog_cnt, gfp_t flags);
 void bpf_prog_array_free(struct bpf_prog_array __rcu *progs);
 int bpf_prog_array_length(struct bpf_prog_array __rcu *progs);
+bool bpf_prog_array_is_empty(struct bpf_prog_array *progs);
 int bpf_prog_array_copy_to_user(struct bpf_prog_array __rcu *progs,
 				__u32 __user *prog_ids, u32 cnt);
 				
@@ -355,6 +389,7 @@ void bpf_map_put_with_uref(struct bpf_map *map);
 void bpf_map_put(struct bpf_map *map);
 int bpf_map_precharge_memlock(u32 pages);
 void *bpf_map_area_alloc(size_t size, int numa_node);
+void *bpf_map_area_mmapable_alloc(size_t size, int numa_node);
 void bpf_map_area_free(void *base);
 
 extern int sysctl_unprivileged_bpf_disabled;
@@ -540,6 +575,28 @@ static inline int sock_map_prog(struct bpf_map *map,
 #endif
 
 /* verifier prototypes for helper functions called from eBPF programs */
+
+#ifdef CONFIG_NET
+bool bpf_sock_is_valid_access(int off, int size, enum bpf_access_type type,
+                             struct bpf_insn_access_aux *info);
+u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
+        const struct bpf_insn *si, struct bpf_insn *buffer,
+        struct bpf_prog *prog, u32 *target_size);
+#else
+static inline bool bpf_sock_is_valid_access(int off, int size,
+        enum bpf_access_type type, struct bpf_insn_access_aux *info)
+{
+    return false;
+}
+static inline u32 bpf_sock_convert_ctx_access(enum bpf_access_type type,
+        const struct bpf_insn *si, struct bpf_insn *buffer,
+        struct bpf_prog *prog, u32 *target_size)
+{
+    return 0;
+}
+#endif
+extern const struct bpf_func_proto bpf_get_socket_cookie_sock_proto;
+
 extern const struct bpf_func_proto bpf_map_lookup_elem_proto;
 extern const struct bpf_func_proto bpf_map_update_elem_proto;
 extern const struct bpf_func_proto bpf_map_delete_elem_proto;
@@ -563,3 +620,13 @@ void bpf_user_rnd_init_once(void);
 u64 bpf_user_rnd_u32(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
 
 #endif /* _LINUX_BPF_H */
+
+extern const struct bpf_func_proto bpf_ringbuf_output_proto;
+
+extern const struct bpf_func_proto bpf_ringbuf_reserve_proto;
+
+extern const struct bpf_func_proto bpf_ringbuf_submit_proto;
+
+extern const struct bpf_func_proto bpf_ringbuf_discard_proto;
+
+extern const struct bpf_func_proto bpf_ringbuf_query_proto;

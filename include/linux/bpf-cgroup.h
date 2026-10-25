@@ -60,6 +60,8 @@ int __cgroup_bpf_run_filter_skb(struct sock *sk,
 				struct sk_buff *skb,
 				enum bpf_attach_type type);
 
+void __cgroup_bpf_run_sock_release(struct sock *sk);
+
 int __cgroup_bpf_run_filter_sk(struct sock *sk,
 			    enum bpf_attach_type type);
 
@@ -106,6 +108,13 @@ int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
 	}								       \
 	__ret;								       \
 })
+
+#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) \
+do { \
+	typeof(sk) __sk = (sk); \
+	if (cgroup_bpf_enabled && __sk) \
+		__cgroup_bpf_run_sock_release(__sk); \
+} while (0)
 
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk)				       \
 	BPF_CGROUP_RUN_SK_PROG(sk, BPF_CGROUP_INET_SOCK_CREATE)
@@ -193,6 +202,20 @@ int __cgroup_bpf_check_dev_permission(short dev_type, u32 major, u32 minor,
 									      \
 	__ret;								      \
 })
+
+int __cgroup_bpf_run_filter_setsockopt(struct sock *sk, int *level,
+        int *optname, char __user *optval, int *optlen, char **kernel_optval);
+int __cgroup_bpf_run_filter_getsockopt(struct sock *sk, int level,
+        int optname, char __user *optval, int __user *optlen,
+        int max_optlen, int retval);
+
+#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) \
+    __cgroup_bpf_run_filter_setsockopt(sk, level, name, value, length, kvalue)
+#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) \
+    __cgroup_bpf_run_filter_getsockopt(sk, level, name, value, length, maxlen, ret)
+#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) \
+({ int __length = 0; if (cgroup_bpf_enabled) get_user(__length, length); __length; })
+
 #else
 
 struct cgroup_bpf {};
@@ -203,6 +226,7 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 #define BPF_CGROUP_PRE_CONNECT_ENABLED(sk) (0)
 #define BPF_CGROUP_RUN_PROG_INET_INGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) do { } while (0)
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr) ({ 0; })
@@ -218,6 +242,11 @@ static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 #define BPF_CGROUP_RUN_PROG_UDP6_RECVMSG_LOCK(sk, uaddr) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_SOCK_OPS(sock_ops) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_DEVICE_CGROUP(type,major,minor,access) ({ 0; })
+
+
+#define BPF_CGROUP_RUN_PROG_SETSOCKOPT(sk, level, name, value, length, kvalue) (0)
+#define BPF_CGROUP_RUN_PROG_GETSOCKOPT(sk, level, name, value, length, maxlen, ret) (ret)
+#define BPF_CGROUP_GETSOCKOPT_MAX_OPTLEN(length) (0)
 
 #endif /* CONFIG_CGROUP_BPF */
 
